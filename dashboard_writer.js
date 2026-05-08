@@ -993,9 +993,9 @@ function render(){
   const syms=Object.keys(_D);
   const isAI=_activeTab==='AI_ETF';
   // AI ETF tab button first, then signal tabs
-  const aiBtn='<button class="tab-btn'+(isAI?' active':'')+'" data-sym="AI_ETF" onclick="switchTab(\'AI_ETF\')">🤖 AI ETFs</button>';
+  const aiBtn='<button class="tab-btn'+(isAI?' active':'')+'" data-sym="AI_ETF" onclick="switchTab(this.dataset.sym)">🤖 AI ETFs</button>';
   const tabBar='<div id="tabs-bar">'+aiBtn
-    +syms.map(s=>'<button class="tab-btn'+(s===_activeTab?' active':'')+'" data-sym="'+s+'" onclick="switchTab(\''+s+'\')">'+esc(s)+'</button>').join('')
+    +syms.map(s=>'<button class="tab-btn'+(s===_activeTab?' active':'')+'" data-sym="'+s+'" onclick="switchTab(this.dataset.sym)">'+esc(s)+'</button>').join('')
     +'</div>';
   const aiPanel='<div id="tab-AI_ETF" class="tab-panel'+(isAI?' active':'')+'">'+renderAIEtfTab()+'</div>';
   const panels=syms.map(s=>\`<div id="tab-\${s}" class="tab-panel\${s===_activeTab?' active':''}">\${renderTabContent(s)}</div>\`).join('');
