@@ -27,6 +27,7 @@ const { analyzeOptions, analyzeOptionsFor } = require("./options_checker");
 const { fetchAllNews, aggregateSentiment } = require("./news_aggregator");
 const { recommendSpread }             = require("./spread_calculator");
 const { askOllama }                   = require("./ollama_advisor");
+const { fetchAIETFData }              = require("./ai_etf_monitor");
 const { writeDashboard, writeDashboardMulti } = require("./dashboard_writer");
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
@@ -549,12 +550,14 @@ async function check() {
         const ndxSpread = recommendSpread(ndxOptions, ndxSig.prediction);
         const spxSpread = recommendSpread(spxOptions, spxSig.prediction);
 
-        // ── STEP 4: AI TRADE ADVISORS (parallel) ─────────────────────────────
+        // ── STEP 4: AI TRADE ADVISORS + ETF MONITOR (parallel) ───────────────
         const [ndxAI, spxAI] = await Promise.all([
             askOllama({ symbol: "NDX", ...ndxSig, news, options: ndxOptions, spread: ndxSpread })
                 .catch(e => { console.warn(`  [WARN] Ollama NDX: ${e.message}`); return null; }),
             askOllama({ symbol: "SPX", ...spxSig, news, options: spxOptions, spread: spxSpread })
                 .catch(e => { console.warn(`  [WARN] Ollama SPX: ${e.message}`); return null; }),
+            fetchAIETFData()
+                .catch(e => { console.warn(`  [WARN] AI ETF: ${e.message}`); }),
         ]);
 
         // ── CONSOLE REPORT ────────────────────────────────────────────────────

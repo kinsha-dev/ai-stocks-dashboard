@@ -57,6 +57,17 @@ function loadScreenerResults() {
     } catch (_) { return null; }
 }
 
+// ── AI ETF DATA ───────────────────────────────────────────────────────────────
+
+const AI_ETF_FILE = path.join(__dirname, "ai_etf_data.json");
+
+function loadAIEtfData() {
+    try {
+        if (!fs.existsSync(AI_ETF_FILE)) return null;
+        return JSON.parse(fs.readFileSync(AI_ETF_FILE, "utf8"));
+    } catch (_) { return null; }
+}
+
 function buildScreenerSection(sc) {
     if (!sc) return "";
     const ts = sc.timestamp
@@ -296,9 +307,14 @@ function generateHTML(history) {
         .replace(/<!--/g, "<\\!--");
     const screener     = loadScreenerResults();
     const screenerHtml = buildScreenerSection(screener);
+    const aiEtfData    = loadAIEtfData();
+    const safeEtfJson  = JSON.stringify(aiEtfData)
+        .replace(/<\/script>/gi, "<\\/script>")
+        .replace(/<!--/g, "<\\!--");
     const html = HTML_TEMPLATE
         .replace("__DASHBOARD_DATA__", safeJson)
-        .replace("__SCREENER_HTML__",  screenerHtml);
+        .replace("__SCREENER_HTML__",  screenerHtml)
+        .replace("__AI_ETF_DATA__",    safeEtfJson);
     fs.writeFileSync(DASHBOARD_FILE, html, "utf8");
 }
 
@@ -433,6 +449,33 @@ tr:hover td{background:rgba(255,255,255,.03)}
 .sc-news a:hover{color:var(--blue)}
 @media(max-width:1100px){.sc-grid{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:700px){.sc-grid{grid-template-columns:repeat(2,1fr)}}
+/* AI ETF TAB */
+.etf-sentiment-bar{display:flex;align-items:center;gap:12px;padding:10px 20px;border-bottom:1px solid;margin-bottom:0;flex-wrap:wrap}
+.etf-sentiment-emoji{font-size:20px;flex-shrink:0}
+.etf-sentiment-label{font-size:15px;font-weight:800}
+.etf-sentiment-detail{font-size:12px;color:var(--muted)}
+.etf-sentiment-ts{margin-left:auto;font-size:11px;color:var(--muted)}
+.etf-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}
+.etf-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:3px;transition:border-color .15s}
+.etf-card:hover{border-color:var(--blue)}
+.etf-error{opacity:.5}
+.etf-head{display:flex;align-items:center;justify-content:space-between;gap:4px}
+.etf-ticker{font-size:16px;font-weight:800;color:var(--blue);text-decoration:none}
+.etf-ticker:hover{text-decoration:underline}
+.etf-name{font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.etf-theme{font-size:9px;color:var(--blue);opacity:.65;text-transform:uppercase;letter-spacing:.05em}
+.etf-price{font-size:15px;font-weight:700;margin-top:2px}
+.etf-chg{font-size:12px}
+.etf-rsi{font-size:11px;display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.etf-spark{margin-top:5px}
+.earnings-table{width:100%;border-collapse:collapse;font-size:12px}
+.earnings-table th{text-align:left;color:var(--muted);font-size:10px;text-transform:uppercase;padding:4px 8px;border-bottom:1px solid var(--border)}
+.earnings-table td{padding:5px 8px;border-bottom:1px solid #21262d}
+.earnings-table tr:last-child td{border-bottom:none}
+.earnings-table tr:hover td{background:rgba(255,255,255,.03)}
+@media(max-width:1300px){.etf-grid{grid-template-columns:repeat(4,1fr)}}
+@media(max-width:900px){.etf-grid{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:600px){.etf-grid{grid-template-columns:repeat(2,1fr)}}
 /* SCROLLBAR */
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:var(--bg2)}
@@ -446,7 +489,8 @@ tr:hover td{background:rgba(255,255,255,.03)}
 __SCREENER_HTML__
 <div id="app"></div>
 <script>
-const _D = __DASHBOARD_DATA__;
+const _D    = __DASHBOARD_DATA__;
+const _ETFS = __AI_ETF_DATA__;
 </script>
 <script>
 // ── HELPERS ──────────────────────────────────────────────────────────────────
@@ -823,6 +867,101 @@ function renderNewsFeed(news){
 </div>\`;
 }
 
+// ── AI ETF TAB ────────────────────────────────────────────────────────────────
+
+function miniSpark(history){
+  if(!history||history.length<2) return '';
+  const mn=Math.min(...history),mx=Math.max(...history),rng=mx-mn||1;
+  const W=64,H=22;
+  const pts=history.map((p,i)=>[(i/(history.length-1)*W).toFixed(1),(H-2-(p-mn)/rng*(H-4)).toFixed(1)].join(',')).join(' ');
+  const up=history[history.length-1]>=history[0];
+  return '<svg width="64" height="22" viewBox="0 0 64 22" style="display:block"><polyline points="'+pts+'" fill="none" stroke="'+(up?'var(--bull)':'var(--bear)')+'" stroke-width="1.5"/></svg>';
+}
+
+function renderEtfCard(e){
+  if(e.error||e.price==null) return '<div class="etf-card etf-error"><div class="etf-head"><span class="etf-ticker">'+esc(e.ticker)+'</span></div><div style="color:var(--muted);font-size:11px;margin-top:4px">No data</div></div>';
+  const dClr=e.dayChg>0?'var(--bull)':e.dayChg<0?'var(--bear)':'var(--muted)';
+  const wClr=e.weekChg==null?'var(--muted)':e.weekChg>0?'var(--bull)':e.weekChg<0?'var(--bear)':'var(--muted)';
+  const trendCls=e.trend==='BULL'?'bg-bull':'bg-bear';
+  const rsiClr=e.rsi>70?'var(--bear)':e.rsi<30?'var(--bull)':e.rsi>=45&&e.rsi<=65?'var(--teal)':'var(--muted)';
+  return '<div class="etf-card">'
+    +'<div class="etf-head"><a href="https://finance.yahoo.com/quote/'+esc(e.ticker)+'" target="_blank" class="etf-ticker">'+esc(e.ticker)+'</a>'
+    +'<span class="badge '+trendCls+'" style="font-size:9px;padding:1px 5px">'+esc(e.trend||'—')+'</span></div>'
+    +'<div class="etf-name">'+esc(e.name)+'</div>'
+    +'<div class="etf-theme">'+esc(e.theme)+'</div>'
+    +'<div class="etf-price">$'+fmtP(e.price)+'</div>'
+    +'<div class="etf-chg"><span style="color:'+dClr+';font-weight:700">'+(e.dayChg>=0?'+':'')+e.dayChg.toFixed(2)+'%</span>'
+    +(e.weekChg!=null?' <span style="color:'+wClr+';font-size:10px">/ '+(e.weekChg>=0?'+':'')+e.weekChg.toFixed(1)+'% wk</span>':'')+'</div>'
+    +'<div class="etf-rsi"><span style="color:var(--muted)">RSI</span><span style="color:'+rsiClr+';font-weight:700"> '+e.rsi+'</span>'
+    +(e.volRatio!=null&&e.volRatio>1.5?' <span class="badge" style="font-size:9px;background:rgba(210,153,34,.12);color:#d29922;padding:1px 4px">Vol '+e.volRatio+'x</span>':'')+'</div>'
+    +'<div class="etf-spark">'+miniSpark(e.history)+'</div>'
+    +'</div>';
+}
+
+function renderEarningsCalendar(earnings){
+  if(!earnings||!earnings.length) return '<p style="color:var(--muted);font-size:12px;padding:6px 0">No upcoming earnings data</p>';
+  const today=new Date();
+  const rows=earnings.map(e=>{
+    const d=new Date(e.date+'T00:00:00');
+    const diff=Math.round((d-today)/(1000*60*60*24));
+    const daysLbl=diff===0?'<span style="color:var(--neutral);font-weight:700">TODAY</span>'
+      :diff===1?'<span style="color:var(--neutral)">Tomorrow</span>'
+      :diff<0?'<span style="color:var(--muted)">Reported</span>'
+      :'<span style="color:var(--muted)">'+diff+'d</span>';
+    const epsHtml=e.epsEst?'<span style="color:var(--muted)">est $'+esc(e.epsEst)+(e.epsLow&&e.epsHigh?' ('+esc(e.epsLow)+'–'+esc(e.epsHigh)+')':'')+'</span>':'—';
+    return '<tr><td style="font-weight:700;color:var(--blue)">'+esc(e.ticker)+'</td><td>'+esc(e.date)+'</td><td>'+daysLbl+'</td><td>'+epsHtml+'</td></tr>';
+  }).join('');
+  return '<table class="earnings-table"><thead><tr><th>Ticker</th><th>Date</th><th>In</th><th>EPS Est</th></tr></thead><tbody>'+rows+'</tbody></table>';
+}
+
+function renderAINewsPanel(allData){
+  const AI_KW=['ai ','artificial intelligence','nvidia','semiconductor',' chip','gpu','machine learning','llm','openai','gemini','chatgpt','robot','automation','quantum','deep learning','neural network'];
+  const seen=new Set();
+  const articles=[];
+  for(const sym of Object.keys(allData)){
+    const snaps=(allData[sym]?.snapshots)||[];
+    if(!snaps.length) continue;
+    for(const a of (snaps[snaps.length-1]?.news?.topStories||[])){
+      if(!seen.has(a.title)){seen.add(a.title);articles.push(a);}
+    }
+  }
+  const filtered=articles.filter(a=>AI_KW.some(kw=>(a.title||'').toLowerCase().includes(kw)));
+  if(!filtered.length) return '<p style="color:var(--muted);font-size:12px">No AI-specific articles in current feed.</p>';
+  return '<div class="news-grid">'+filtered.slice(0,14).map(a=>{
+    const sc=a.score;
+    const sClr=sc>=2?'var(--bull)':sc>=1?'#56d364':sc<=-2?'var(--bear)':sc<=-1?'#f07070':'var(--muted)';
+    const bg=sc>=1?'rgba(63,185,80,.06)':sc<=-1?'rgba(248,81,73,.06)':'var(--bg3)';
+    const titleHtml=a.url?'<a href="'+esc(a.url)+'" target="_blank" rel="noopener">'+esc(a.title)+'</a>':esc(a.title);
+    return '<div class="news-item" style="background:'+bg+'"><span class="news-score" style="color:'+sClr+'">'+(sc>0?'+':'')+sc+'</span><div><div class="news-src">'+esc(a.source||'?')+'</div><div class="news-title">'+titleHtml+'</div></div></div>';
+  }).join('')+'</div>';
+}
+
+function renderAIEtfTab(){
+  if(!_ETFS) return '<div style="padding:60px;text-align:center;color:var(--muted)">AI ETF data not yet available — run signal_checker.js to populate.</div>';
+  const s=_ETFS.sentiment||{};
+  const ts=_ETFS.timestamp?new Date(_ETFS.timestamp).toLocaleString():'—';
+  const sClr=s.score>0?'var(--bull)':s.score<0?'var(--bear)':'var(--neutral)';
+  const sBg=s.score>0?'rgba(63,185,80,.08)':s.score<0?'rgba(248,81,73,.08)':'rgba(210,153,34,.06)';
+  const avgText=(s.avgDayChg!=null?(s.avgDayChg>=0?'+':'')+s.avgDayChg.toFixed(2)+'% avg day':'—')
+    +' &bull; '+(s.bullCount||0)+'/'+(s.total||0)+' ETFs green'
+    +' &bull; '+(s.bullTrend||0)+'/'+(s.total||0)+' above EMA20';
+
+  const sentimentBar='<div class="etf-sentiment-bar" style="background:'+sBg+';border-color:'+sClr+'">'
+    +'<span class="etf-sentiment-emoji">'+esc(s.emoji||'')+'</span>'
+    +'<span class="etf-sentiment-label" style="color:'+sClr+'">AI Sector: '+esc(s.label||'—')+'</span>'
+    +'<span class="etf-sentiment-detail">'+avgText+'</span>'
+    +'<span class="etf-sentiment-ts">Updated '+esc(ts)+'</span>'
+    +'</div>';
+
+  return sentimentBar
+    +'<div style="padding:14px 20px"><div class="etf-grid">'+(_ETFS.etfs||[]).map(renderEtfCard).join('')+'</div></div>'
+    +'<div class="lower-grid" style="padding:0 20px 14px">'
+    +'<div class="panel" style="grid-column:span 2"><h3>📅 Upcoming Earnings — AI Leaders</h3>'+renderEarningsCalendar(_ETFS.earnings)+'</div>'
+    +'<div class="panel"><h3>📰 AI &amp; Tech News</h3>'+renderAINewsPanel(_D)+'</div>'
+    +'</div>'
+    +\`<div id="footer">AI ETF Monitor &bull; \${(_ETFS.etfs||[]).length} ETFs tracked &bull; Auto-reload every 60s</div>\`;
+}
+
 // ── TAB RENDER ────────────────────────────────────────────────────────────────
 function renderTabContent(sym){
   const symData=_D[sym]||{symbol:sym,snapshots:[]};
@@ -842,23 +981,25 @@ function renderTabContent(sym){
 }
 
 // ── MAIN RENDER ───────────────────────────────────────────────────────────────
-let _activeTab=Object.keys(_D)[0]||'NDX';
+let _activeTab='AI_ETF';
 
 function switchTab(sym){
   _activeTab=sym;
-  // Update button active states
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.sym===sym));
-  // Show/hide panels
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.toggle('active',p.id==='tab-'+sym));
 }
 
 function render(){
   const syms=Object.keys(_D);
-  // Build tab bar
-  const tabBar='<div id="tabs-bar">'+syms.map(s=>\`<button class="tab-btn\${s===_activeTab?' active':''}" data-sym="\${s}" onclick="switchTab('\${s}')">\${esc(s)}</button>\`).join('')+'</div>';
-  // Build tab panels (all rendered, CSS shows/hides)
+  const isAI=_activeTab==='AI_ETF';
+  // AI ETF tab button first, then signal tabs
+  const aiBtn='<button class="tab-btn'+(isAI?' active':'')+'" data-sym="AI_ETF" onclick="switchTab(\'AI_ETF\')">🤖 AI ETFs</button>';
+  const tabBar='<div id="tabs-bar">'+aiBtn
+    +syms.map(s=>'<button class="tab-btn'+(s===_activeTab?' active':'')+'" data-sym="'+s+'" onclick="switchTab(\''+s+'\')">'+esc(s)+'</button>').join('')
+    +'</div>';
+  const aiPanel='<div id="tab-AI_ETF" class="tab-panel'+(isAI?' active':'')+'">'+renderAIEtfTab()+'</div>';
   const panels=syms.map(s=>\`<div id="tab-\${s}" class="tab-panel\${s===_activeTab?' active':''}">\${renderTabContent(s)}</div>\`).join('');
-  document.getElementById('app').innerHTML=tabBar+panels;
+  document.getElementById('app').innerHTML=tabBar+aiPanel+panels;
 }
 
 render();
