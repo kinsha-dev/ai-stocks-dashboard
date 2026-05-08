@@ -1,0 +1,11 @@
+{
+  "name": "spx-signal-monitor",
+  "version": "2.0.0",
+  "description": "TradingView SPX webhook → push notification (ntfy.sh)",
+  "main": "webhook_monitor.js",
+  "scripts": {
+    "start": "node webhook_monitor.js",
+    "test":  "node test_push.js STRONG_BUY"
+  },
+  "engines": { "node": ">=16" }
+}

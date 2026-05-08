@@ -1,0 +1,413 @@
+//@version=5
+strategy("NDX SMC Signal Strategy v3", shorttitle="NDX-SMC3", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=100, commission_type=strategy.commission.percent, commission_value=0.01, max_boxes_count=200, max_lines_count=100)
+
+// ============================================================
+// SECTION 1 -- INPUTS
+// ============================================================
+
+// Classic indicators
+ema_fast    = input.int(9,    "Fast EMA",           minval=1,    group="Classic Indicators")
+ema_slow    = input.int(21,   "Slow EMA",           minval=1,    group="Classic Indicators")
+ema_trend   = input.int(200,  "Trend EMA",          minval=1,    group="Classic Indicators")
+rsi_len     = input.int(14,   "RSI Length",         minval=1,    group="Classic Indicators")
+rsi_ob      = input.int(70,   "RSI Overbought",     minval=50,   group="Classic Indicators")
+rsi_os      = input.int(30,   "RSI Oversold",       maxval=50,   group="Classic Indicators")
+macd_fast   = input.int(12,   "MACD Fast",          minval=1,    group="Classic Indicators")
+macd_slow   = input.int(26,   "MACD Slow",          minval=1,    group="Classic Indicators")
+macd_sig    = input.int(9,    "MACD Signal",        minval=1,    group="Classic Indicators")
+use_vol     = input.bool(true, "Volume Filter",                  group="Classic Indicators")
+vol_mult    = input.float(1.5, "Volume Multiplier", step=0.1,    group="Classic Indicators")
+atr_len     = input.int(14,   "ATR Length",                      group="Risk Management")
+sl_mult     = input.float(2.0, "Stop ATR x",        step=0.1,    group="Risk Management")
+tp_mult     = input.float(3.0, "Take Profit ATR x", step=0.1,    group="Risk Management")
+
+// SMC settings
+sweep_lb      = input.int(20,   "Sweep Lookback (bars)",    minval=5, maxval=100, group="Smart Money Concepts")
+show_fvg      = input.bool(true, "Show FVG Boxes",                               group="Smart Money Concepts")
+show_sweep    = input.bool(true, "Show Sweep Labels",                             group="Smart Money Concepts")
+climax_x      = input.float(3.0, "Climax Volume (x avg)",  step=0.5,             group="Smart Money Concepts")
+smc_threshold = input.int(70,   "SMC Setup Min Confidence %", minval=50, maxval=100, group="Smart Money Concepts")
+
+// Options Levels (enter manually from options_checker.js each session)
+show_opt_levels = input.bool(true,   "Show Options Levels",  group="Options Levels")
+opt_gex_pos     = input.bool(true,   "GEX Positive?",        group="Options Levels")
+opt_gamma_flip  = input.float(0.0,   "Gamma Flip ($)",  step=0.5, group="Options Levels")
+opt_gamma_pin   = input.float(0.0,   "Gamma Pin ($)",   step=0.5, group="Options Levels")
+opt_call_wall   = input.float(0.0,   "Call Wall ($)",   step=0.5, group="Options Levels")
+opt_put_wall    = input.float(0.0,   "Put Wall ($)",    step=0.5, group="Options Levels")
+opt_max_pain    = input.float(0.0,   "Max Pain ($)",    step=0.5, group="Options Levels")
+
+// ============================================================
+// SECTION 2 -- CLASSIC INDICATORS
+// ============================================================
+
+ema9    = ta.ema(close, ema_fast)
+ema21   = ta.ema(close, ema_slow)
+ema200  = ta.ema(close, ema_trend)
+rsi_v   = ta.rsi(close, rsi_len)
+[macdLine, signalLine, histLine] = ta.macd(close, macd_fast, macd_slow, macd_sig)
+atr_v   = ta.atr(atr_len)
+vol_avg = ta.sma(volume, 20)
+
+// ============================================================
+// SECTION 3 -- CLASSIC SIGNALS
+// ============================================================
+
+bull_trend     = close > ema200
+bear_trend     = close < ema200
+ema_cross_up   = ta.crossover(ema9, ema21)
+ema_cross_down = ta.crossunder(ema9, ema21)
+rsi_bull       = rsi_v > 50 and rsi_v < rsi_ob
+rsi_bear       = rsi_v < 50 and rsi_v > rsi_os
+macd_cross_up  = ta.crossover(macdLine, signalLine)
+macd_cross_dn  = ta.crossunder(macdLine, signalLine)
+macd_bull      = macdLine > 0 and histLine > 0
+macd_bear      = macdLine < 0 and histLine < 0
+vol_ok         = not use_vol or (volume > vol_avg * vol_mult)
+
+bull_score  = (ema9 > ema21 ? 1 : 0) + (macd_bull ? 1 : 0) + (rsi_bull ? 1 : 0)
+bear_score  = (ema9 < ema21 ? 1 : 0) + (macd_bear ? 1 : 0) + (rsi_v < 50 ? 1 : 0)
+long_signal  = ema_cross_up   and bull_trend and rsi_bull and macd_cross_up and vol_ok
+short_signal = ema_cross_down and bear_trend and rsi_bear and macd_cross_dn and vol_ok
+strong_long  = long_signal  and bull_score >= 3
+strong_short = short_signal and bear_score >= 3
+
+// ============================================================
+// SECTION 4 -- LIQUIDITY SWEEP DETECTION
+//
+// Bull sweep: current bar wicks BELOW the recent swing low
+//             but CLOSES above it -- stops hunted, reversal up
+// Bear sweep: current bar wicks ABOVE the recent swing high
+//             but CLOSES below it -- stops hunted, reversal down
+// ============================================================
+
+// Highest/lowest over the last sweep_lb bars, excluding current bar
+recent_high = ta.highest(high, sweep_lb)[1]
+recent_low  = ta.lowest(low,  sweep_lb)[1]
+
+bull_sweep = low  < recent_low  and close > recent_low
+bear_sweep = high > recent_high and close < recent_high
+
+// ============================================================
+// SECTION 5 -- FAIR VALUE GAP (FVG) DETECTION
+//
+// Bullish FVG: low[0] > high[2]  -- upward imbalance (support zone below)
+// Bearish FVG: high[0] < low[2]  -- downward imbalance (resistance zone above)
+// FVG box = the empty price range between the 3 candles
+// ============================================================
+
+bull_fvg_raw = low > high[2]
+bear_fvg_raw = high < low[2]
+
+// Track last 3 unfilled FVG zones per direction
+var float[] bf_tops = array.new_float(0)
+var float[] bf_bots = array.new_float(0)
+var float[] brf_tops = array.new_float(0)
+var float[] brf_bots = array.new_float(0)
+
+if bull_fvg_raw
+    // Gap zone: bottom = high[2], top = low (current)
+    array.unshift(bf_tops, low)
+    array.unshift(bf_bots, high[2])
+    if array.size(bf_tops) > 3
+        array.pop(bf_tops)
+        array.pop(bf_bots)
+    if show_fvg
+        box.new(bar_index - 2, low, bar_index + 60, high[2], border_color=color.new(color.teal, 30), bgcolor=color.new(color.teal, 87), border_width=1)
+
+if bear_fvg_raw
+    // Gap zone: bottom = high (current), top = low[2]
+    array.unshift(brf_tops, low[2])
+    array.unshift(brf_bots, high)
+    if array.size(brf_tops) > 3
+        array.pop(brf_tops)
+        array.pop(brf_bots)
+    if show_fvg
+        box.new(bar_index - 2, low[2], bar_index + 60, high, border_color=color.new(color.orange, 30), bgcolor=color.new(color.orange, 87), border_width=1)
+
+// Check if current price is inside any tracked FVG zone
+in_bull_fvg = false
+if array.size(bf_tops) > 0
+    for j = 0 to array.size(bf_tops) - 1
+        t = array.get(bf_tops, j)
+        b = array.get(bf_bots, j)
+        if not na(t) and not na(b) and close >= b and close <= t
+            in_bull_fvg := true
+            break
+
+in_bear_fvg = false
+if array.size(brf_tops) > 0
+    for j = 0 to array.size(brf_tops) - 1
+        t = array.get(brf_tops, j)
+        b = array.get(brf_bots, j)
+        if not na(t) and not na(b) and close >= b and close <= t
+            in_bear_fvg := true
+            break
+
+// ============================================================
+// SECTION 6 -- VOLUME ANALYSIS
+//
+// close_pos: 0 = bar closed at low, 1 = bar closed at high
+// delta_proxy: +1 = fully bull bar, -1 = fully bear bar
+// Climax: volume > avg * climax_x
+// Absorption: high volume + tiny body (reversal warning)
+// ============================================================
+
+bar_range   = high - low
+body_size   = math.abs(close - open)
+close_pos   = bar_range > 0.0 ? (close - low) / bar_range : 0.5
+delta_proxy = bar_range > 0.0 ? (close - open) / bar_range : 0.0
+vol_ratio   = vol_avg > 0 ? volume / vol_avg : 1.0
+climax_vol  = volume > vol_avg * climax_x
+buy_climax  = climax_vol and close_pos > 0.7
+sell_climax = climax_vol and close_pos < 0.3
+absorption  = volume > vol_avg * 1.5 and body_size < bar_range * 0.2 and bar_range > 0.0
+bull_delta  = delta_proxy > 0.5  and volume > vol_avg * 1.5
+bear_delta  = delta_proxy < -0.5 and volume > vol_avg * 1.5
+
+// ============================================================
+// SECTION 7 -- NEXT-CANDLE PREDICTION SCORE
+//
+// Max 9 points per direction (news not available in Pine Script)
+// Matches signal_checker.js scoring minus the news component
+//
+// Classic (max 5):  trend +2, EMA cross +1, RSI +1, MACD cross +1
+// SMC (max 3):      sweep +1, FVG zone +1, volume confirmation +1
+// ============================================================
+
+pred_bull = (bull_trend ? 2 : 0) + (ema_cross_up  ? 1 : 0) + (rsi_bull ? 1 : 0) + (macd_cross_up ? 1 : 0) + (bull_sweep ? 1 : 0) + (in_bull_fvg ? 1 : 0) + (buy_climax or bull_delta ? 1 : 0)
+pred_bear = (bear_trend ? 2 : 0) + (ema_cross_down ? 1 : 0) + (rsi_bear ? 1 : 0) + (macd_cross_dn ? 1 : 0) + (bear_sweep ? 1 : 0) + (in_bear_fvg ? 1 : 0) + (sell_climax or bear_delta ? 1 : 0)
+
+confidence = math.round(math.max(pred_bull, pred_bear) / 9.0 * 100.0)
+bias_bull  = pred_bull > pred_bear + 1
+bias_bear  = pred_bear > pred_bull + 1
+
+// SMC setup: high-confidence non-classic signal
+smc_bull_setup = bias_bull and confidence >= smc_threshold and not long_signal
+smc_bear_setup = bias_bear and confidence >= smc_threshold and not short_signal
+
+// ============================================================
+// SECTION 8 -- STRATEGY ORDERS (ATR-based stop and target)
+// ============================================================
+
+if long_signal
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long Exit", "Long", stop=close - atr_v * sl_mult, limit=close + atr_v * tp_mult)
+
+if short_signal
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short Exit", "Short", stop=close + atr_v * sl_mult, limit=close - atr_v * tp_mult)
+
+// ============================================================
+// SECTION 9 -- PLOTS
+// plot() call order determines {{plot_N}} index in alerts:
+//   plot_0 = EMA 9
+//   plot_1 = EMA 21
+//   plot_2 = EMA 200
+//   plot_3 = RSI
+//   plot_4 = Bull Score
+//   plot_5 = Bear Score
+//   plot_6 = Pred Bull
+//   plot_7 = Pred Bear
+//   plot_8 = Confidence
+//   plot_9 = Vol Ratio
+// ============================================================
+
+plot(ema9,   "EMA 9",   color=color.new(color.blue,   0), linewidth=1)
+plot(ema21,  "EMA 21",  color=color.new(color.orange, 0), linewidth=1)
+plot(ema200, "EMA 200", color=color.new(color.gray,  30), linewidth=2)
+
+plot(rsi_v,     "RSI",       display=display.none)
+plot(bull_score,"Bull Score",display=display.none)
+plot(bear_score,"Bear Score",display=display.none)
+plot(pred_bull, "Pred Bull", display=display.none)
+plot(pred_bear, "Pred Bear", display=display.none)
+plot(confidence,"Confidence",display=display.none)
+plot(vol_ratio, "Vol Ratio", display=display.none)
+
+// Options level hidden plots -- indices plot_10 through plot_14
+// These allow {{plot_10}} etc. in alertcondition message strings
+plot(opt_gamma_flip, "Gamma Flip Val", display=display.none)
+plot(opt_gamma_pin,  "Gamma Pin Val",  display=display.none)
+plot(opt_call_wall,  "Call Wall Val",  display=display.none)
+plot(opt_put_wall,   "Put Wall Val",   display=display.none)
+plot(opt_max_pain,   "Max Pain Val",   display=display.none)
+
+// ============================================================
+// SECTION 10 -- SIGNAL LABELS
+// ============================================================
+
+// Classic entry labels
+plotshape(long_signal,  "Buy",      style=shape.triangleup,   location=location.belowbar, color=color.new(color.green,   0), size=size.small,  text="BUY")
+plotshape(short_signal, "Sell",     style=shape.triangledown, location=location.abovebar, color=color.new(color.red,     0), size=size.small,  text="SELL")
+plotshape(strong_long,  "Str Buy",  style=shape.labelup,      location=location.belowbar, color=color.new(color.lime,    0), size=size.normal, text="STRONG BUY",  textcolor=color.black)
+plotshape(strong_short, "Str Sell", style=shape.labeldown,    location=location.abovebar, color=color.new(color.maroon,  0), size=size.normal, text="STRONG SELL", textcolor=color.white)
+
+// Liquidity sweep labels
+plotshape(bull_sweep and show_sweep, "Bull Sweep", style=shape.circle, location=location.belowbar, color=color.new(color.teal,   20), size=size.small, text="SWEEP")
+plotshape(bear_sweep and show_sweep, "Bear Sweep", style=shape.circle, location=location.abovebar, color=color.new(color.orange, 20), size=size.small, text="SWEEP")
+
+// Volume analysis labels
+plotshape(buy_climax,  "Buy Climax",  style=shape.diamond, location=location.belowbar, color=color.new(color.aqua,   10), size=size.small, text="VOL+")
+plotshape(sell_climax, "Sell Climax", style=shape.diamond, location=location.abovebar, color=color.new(color.red,    10), size=size.small, text="VOL-")
+plotshape(absorption,  "Absorption",  style=shape.xcross,  location=location.abovebar, color=color.new(color.yellow, 10), size=size.tiny,  text="ABS")
+
+// SMC prediction setup labels
+plotshape(smc_bull_setup, "SMC Bull", style=shape.arrowup,   location=location.belowbar, color=color.new(color.teal,   0), size=size.normal, text="SMC BULL", textcolor=color.white)
+plotshape(smc_bear_setup, "SMC Bear", style=shape.arrowdown, location=location.abovebar, color=color.new(color.orange, 0), size=size.normal, text="SMC BEAR", textcolor=color.white)
+
+// Trend background (subtle)
+bgcolor(bull_trend ? color.new(color.green, 95) : color.new(color.red, 95), title="Trend BG")
+
+// ============================================================
+// SECTION 10.5 -- OPTIONS KEY LEVEL LINES
+// Set values in the "Options Levels" input group each session.
+// Gamma Flip = purple  |  Gamma Pin = yellow
+// Call Wall  = red     |  Put Wall  = lime   |  Max Pain = silver
+// ============================================================
+
+plot(show_opt_levels and opt_gamma_flip != 0.0 ? opt_gamma_flip : na, "Gamma Flip",  color=color.new(color.purple, 0), linewidth=2)
+plot(show_opt_levels and opt_gamma_pin  != 0.0 ? opt_gamma_pin  : na, "Gamma Pin",   color=color.new(color.yellow, 0), linewidth=2)
+plot(show_opt_levels and opt_call_wall  != 0.0 ? opt_call_wall  : na, "Call Wall",   color=color.new(color.red,    0), linewidth=2)
+plot(show_opt_levels and opt_put_wall   != 0.0 ? opt_put_wall   : na, "Put Wall",    color=color.new(color.lime,   0), linewidth=2)
+plot(show_opt_levels and opt_max_pain   != 0.0 ? opt_max_pain   : na, "Max Pain",    color=color.new(color.silver, 0), linewidth=1)
+
+// Right-edge labels for active levels (redrawn on last bar only)
+var label lbl_gflip = na
+var label lbl_gpin  = na
+var label lbl_cwall = na
+var label lbl_pwall = na
+var label lbl_mpain = na
+
+if barstate.islast and show_opt_levels
+    label.delete(lbl_gflip)
+    label.delete(lbl_gpin)
+    label.delete(lbl_cwall)
+    label.delete(lbl_pwall)
+    label.delete(lbl_mpain)
+    if opt_gamma_flip != 0.0
+        lbl_gflip := label.new(bar_index + 3, opt_gamma_flip, "G.Flip " + str.tostring(opt_gamma_flip, "#.0"), color=color.new(color.purple, 10), textcolor=color.white, style=label.style_label_left, size=size.tiny)
+    if opt_gamma_pin != 0.0
+        lbl_gpin  := label.new(bar_index + 3, opt_gamma_pin,  "G.Pin "  + str.tostring(opt_gamma_pin,  "#.0"), color=color.new(color.yellow, 10), textcolor=color.black, style=label.style_label_left, size=size.tiny)
+    if opt_call_wall != 0.0
+        lbl_cwall := label.new(bar_index + 3, opt_call_wall,  "CWall "  + str.tostring(opt_call_wall,  "#.0"), color=color.new(color.red,    10), textcolor=color.white, style=label.style_label_left, size=size.tiny)
+    if opt_put_wall != 0.0
+        lbl_pwall := label.new(bar_index + 3, opt_put_wall,   "PWall "  + str.tostring(opt_put_wall,   "#.0"), color=color.new(color.lime,   10), textcolor=color.black, style=label.style_label_left, size=size.tiny)
+    if opt_max_pain != 0.0
+        lbl_mpain := label.new(bar_index + 3, opt_max_pain,   "MaxPain "+ str.tostring(opt_max_pain,   "#.0"), color=color.new(color.silver, 10), textcolor=color.black, style=label.style_label_left, size=size.tiny)
+
+// ============================================================
+// SECTION 11 -- DASHBOARD TABLE (top-right)
+// ============================================================
+
+var table dash = table.new(position.top_right, 2, 19, border_width=1, border_color=color.new(color.gray, 50), bgcolor=color.new(color.black, 78))
+
+if barstate.islast
+    // Header row
+    table.cell(dash, 0, 0, "Indicator", text_color=color.silver, text_size=size.small, bgcolor=color.new(color.navy, 55))
+    table.cell(dash, 1, 0, "Status",    text_color=color.silver, text_size=size.small, bgcolor=color.new(color.navy, 55))
+
+    // Classic
+    table.cell(dash, 0, 1, "Trend",    text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 1, bull_trend ? "BULL" : "BEAR", text_color=bull_trend ? color.lime : color.red, text_size=size.small)
+
+    table.cell(dash, 0, 2, "EMA 9/21", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 2, ema9 > ema21 ? "Bull" : "Bear", text_color=ema9 > ema21 ? color.lime : color.red, text_size=size.small)
+
+    table.cell(dash, 0, 3, "RSI",      text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 3, str.tostring(math.round(rsi_v, 1)), text_color=rsi_bull ? color.lime : rsi_bear ? color.red : color.orange, text_size=size.small)
+
+    table.cell(dash, 0, 4, "MACD",     text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 4, macdLine > 0 ? "Bull" : "Bear", text_color=macdLine > 0 ? color.lime : color.red, text_size=size.small)
+
+    table.cell(dash, 0, 5, "Score",    text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 5, str.tostring(bull_score) + " / 3", text_color=bull_score >= 3 ? color.lime : bull_score >= 2 ? color.orange : color.red, text_size=size.small)
+
+    // SMC divider row
+    table.cell(dash, 0, 6, "-- SMC --", text_color=color.teal, text_size=size.tiny, bgcolor=color.new(color.teal, 88))
+    table.cell(dash, 1, 6, "--------",  text_color=color.teal, text_size=size.tiny, bgcolor=color.new(color.teal, 88))
+
+    // SMC rows
+    table.cell(dash, 0, 7, "Sweep",    text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 7, bull_sweep ? "BULL" : bear_sweep ? "BEAR" : "None", text_color=bull_sweep ? color.teal : bear_sweep ? color.orange : color.gray, text_size=size.small)
+
+    table.cell(dash, 0, 8, "FVG Zone", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 8, in_bull_fvg ? "In Bull" : in_bear_fvg ? "In Bear" : "None", text_color=in_bull_fvg ? color.teal : in_bear_fvg ? color.orange : color.gray, text_size=size.small)
+
+    table.cell(dash, 0, 9, "Volume",   text_color=color.white, text_size=size.small)
+    vol_status = buy_climax ? "BUY CLIMAX" : sell_climax ? "SELL CLIMAX" : absorption ? "ABSORPTION" : "x" + str.tostring(math.round(vol_ratio, 2))
+    vol_color  = buy_climax ? color.lime : sell_climax ? color.red : absorption ? color.yellow : color.gray
+    table.cell(dash, 1, 9, vol_status, text_color=vol_color, text_size=size.small)
+
+    // Prediction divider row
+    table.cell(dash, 0, 10, "PREDICT", text_color=color.white,  text_size=size.tiny, bgcolor=color.new(color.purple, 82))
+    table.cell(dash, 1, 10, "--------", text_color=color.purple, text_size=size.tiny, bgcolor=color.new(color.purple, 82))
+
+    // Prediction rows
+    bias_str = bias_bull ? "BULL" : bias_bear ? "BEAR" : "NEUTRAL"
+    bias_col  = bias_bull ? color.lime : bias_bear ? color.red : color.gray
+    table.cell(dash, 0, 11, "Bias",       text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 11, bias_str,     text_color=bias_col,    text_size=size.small)
+
+    conf_str = str.tostring(confidence) + "% (" + str.tostring(pred_bull) + "B / " + str.tostring(pred_bear) + "S)"
+    conf_col  = confidence >= 70 ? color.lime : confidence >= 50 ? color.orange : color.gray
+    table.cell(dash, 0, 12, "Confidence", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 12, conf_str,     text_color=conf_col,    text_size=size.small)
+
+    // Options divider row
+    table.cell(dash, 0, 13, "OPTIONS",  text_color=color.white,  text_size=size.tiny, bgcolor=color.new(color.purple, 82))
+    table.cell(dash, 1, 13, "--------", text_color=color.purple, text_size=size.tiny, bgcolor=color.new(color.purple, 82))
+
+    // GEX regime
+    table.cell(dash, 0, 14, "GEX",      text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 14, opt_gex_pos ? "POSITIVE" : "NEGATIVE", text_color=opt_gex_pos ? color.lime : color.red, text_size=size.small)
+
+    // Gamma Flip (above = bull regime, below = bear regime)
+    gflip_str = opt_gamma_flip != 0.0 ? str.tostring(opt_gamma_flip, "#.0") + (close > opt_gamma_flip ? " (above)" : " (below)") : "--"
+    gflip_col = opt_gamma_flip != 0.0 ? (close > opt_gamma_flip ? color.lime : color.red) : color.gray
+    table.cell(dash, 0, 15, "G.Flip",   text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 15, gflip_str,  text_color=gflip_col,   text_size=size.small)
+
+    // Gamma Pin (magnetic price level)
+    gpin_str = opt_gamma_pin != 0.0 ? str.tostring(opt_gamma_pin, "#.0") : "--"
+    table.cell(dash, 0, 16, "G.Pin",    text_color=color.white,  text_size=size.small)
+    table.cell(dash, 1, 16, gpin_str,   text_color=color.yellow, text_size=size.small)
+
+    // Call Wall / Put Wall
+    cwall_str = opt_call_wall != 0.0 ? str.tostring(opt_call_wall, "#") : "--"
+    pwall_str = opt_put_wall  != 0.0 ? str.tostring(opt_put_wall,  "#") : "--"
+    table.cell(dash, 0, 17, "CWall/PWall", text_color=color.white,  text_size=size.small)
+    table.cell(dash, 1, 17, cwall_str + "/" + pwall_str, text_color=color.orange, text_size=size.small)
+
+    // Max Pain
+    mpain_str = opt_max_pain != 0.0 ? str.tostring(opt_max_pain, "#.0") : "--"
+    table.cell(dash, 0, 18, "MaxPain",  text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 18, mpain_str,  text_color=color.aqua,  text_size=size.small)
+
+// ============================================================
+// SECTION 12 -- ALERT CONDITIONS
+// JSON payloads match webhook_monitor.js expected format
+// plot_N references use the index order defined in Section 9
+// ============================================================
+
+alertcondition(long_signal,    title="NDX BUY",          message='{"ticker":"NDX","action":"BUY","price":"{{close}}","rsi":"{{plot_3}}","score":"{{plot_4}}","time":"{{time}}"}')
+alertcondition(short_signal,   title="NDX SELL",         message='{"ticker":"NDX","action":"SELL","price":"{{close}}","rsi":"{{plot_3}}","score":"{{plot_5}}","time":"{{time}}"}')
+alertcondition(strong_long,    title="NDX STRONG BUY",   message='{"ticker":"NDX","action":"STRONG_BUY","price":"{{close}}","rsi":"{{plot_3}}","score":"{{plot_4}}","pred_bull":"{{plot_6}}","confidence":"{{plot_8}}","time":"{{time}}"}')
+alertcondition(strong_short,   title="NDX STRONG SELL",  message='{"ticker":"NDX","action":"STRONG_SELL","price":"{{close}}","rsi":"{{plot_3}}","score":"{{plot_5}}","pred_bear":"{{plot_7}}","confidence":"{{plot_8}}","time":"{{time}}"}')
+alertcondition(bull_sweep,     title="NDX BULL SWEEP",   message='{"ticker":"NDX","action":"BULL_SWEEP","price":"{{close}}","pred_bull":"{{plot_6}}","confidence":"{{plot_8}}","time":"{{time}}"}')
+alertcondition(bear_sweep,     title="NDX BEAR SWEEP",   message='{"ticker":"NDX","action":"BEAR_SWEEP","price":"{{close}}","pred_bear":"{{plot_7}}","confidence":"{{plot_8}}","time":"{{time}}"}')
+alertcondition(bull_fvg_raw,   title="NDX BULL FVG",     message='{"ticker":"NDX","action":"BULL_FVG","price":"{{close}}","confidence":"{{plot_8}}","time":"{{time}}"}')
+alertcondition(bear_fvg_raw,   title="NDX BEAR FVG",     message='{"ticker":"NDX","action":"BEAR_FVG","price":"{{close}}","confidence":"{{plot_8}}","time":"{{time}}"}')
+alertcondition(smc_bull_setup, title="NDX SMC BULL SETUP", message='{"ticker":"NDX","action":"SMC_BULL_SETUP","price":"{{close}}","pred_bull":"{{plot_6}}","confidence":"{{plot_8}}","time":"{{time}}"}')
+alertcondition(smc_bear_setup, title="NDX SMC BEAR SETUP", message='{"ticker":"NDX","action":"SMC_BEAR_SETUP","price":"{{close}}","pred_bear":"{{plot_7}}","confidence":"{{plot_8}}","time":"{{time}}"}')
+
+// Options proximity and gamma flip alerts
+// Fires when price is within 0.5% of a key level, or crosses gamma flip
+// plot_10=gamma_flip  plot_12=call_wall  plot_13=put_wall
+near_call_wall   = show_opt_levels and opt_call_wall  != 0.0 and math.abs(close - opt_call_wall)  / opt_call_wall  < 0.005
+near_put_wall    = show_opt_levels and opt_put_wall   != 0.0 and math.abs(close - opt_put_wall)   / opt_put_wall   < 0.005
+cross_gamma_flip = show_opt_levels and opt_gamma_flip != 0.0 and ta.cross(close, opt_gamma_flip)
+
+alertcondition(near_call_wall,   title="NDX NEAR CALL WALL",   message='{"ticker":"NDX","action":"NEAR_CALL_WALL","price":"{{close}}","call_wall":"{{plot_12}}","time":"{{time}}"}')
+alertcondition(near_put_wall,    title="NDX NEAR PUT WALL",    message='{"ticker":"NDX","action":"NEAR_PUT_WALL","price":"{{close}}","put_wall":"{{plot_13}}","time":"{{time}}"}')
+alertcondition(cross_gamma_flip, title="NDX GAMMA FLIP CROSS", message='{"ticker":"NDX","action":"GAMMA_FLIP_CROSS","price":"{{close}}","gamma_flip":"{{plot_10}}","time":"{{time}}"}')
