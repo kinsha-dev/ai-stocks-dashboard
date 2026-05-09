@@ -914,26 +914,41 @@ function renderEarningsCalendar(earnings){
   return '<table class="earnings-table"><thead><tr><th>Ticker</th><th>Date</th><th>In</th><th>EPS Est</th></tr></thead><tbody>'+rows+'</tbody></table>';
 }
 
-function renderAINewsPanel(allData){
-  const AI_KW=['ai ','artificial intelligence','nvidia','semiconductor',' chip','gpu','machine learning','llm','openai','gemini','chatgpt','robot','automation','quantum','deep learning','neural network'];
-  const seen=new Set();
-  const articles=[];
-  for(const sym of Object.keys(allData)){
-    const snaps=(allData[sym]?.snapshots)||[];
-    if(!snaps.length) continue;
-    for(const a of (snaps[snaps.length-1]?.news?.topStories||[])){
-      if(!seen.has(a.title)){seen.add(a.title);articles.push(a);}
+function renderAINewsPanel(){
+  const news=(_ETFS&&_ETFS.aiNews)||[];
+  if(!news.length) return '<p style="color:var(--muted);font-size:12px">No AI news available yet.</p>';
+  const bySource={};
+  for(const a of news){const s=a.source||'?';if(!bySource[s])bySource[s]=[];bySource[s].push(a);}
+  let html='';
+  for(const [src,articles] of Object.entries(bySource)){
+    html+='<div style="margin-bottom:10px"><div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--blue);margin-bottom:4px">'+esc(src)+'</div>';
+    for(const a of articles){
+      const sc=a.score||0;
+      const sClr=sc>=2?'var(--bull)':sc>=1?'#56d364':sc<=-2?'var(--bear)':sc<=-1?'#f07070':'var(--muted)';
+      const bg=sc>=1?'rgba(63,185,80,.06)':sc<=-1?'rgba(248,81,73,.06)':'var(--bg3)';
+      const titleHtml=a.url?'<a href="'+esc(a.url)+'" target="_blank" rel="noopener">'+esc(a.title)+'</a>':esc(a.title);
+      html+='<div class="news-item" style="background:'+bg+';margin-bottom:3px"><span class="news-score" style="color:'+sClr+'">'+(sc>0?'+':'')+sc+'</span><div><div class="news-title">'+titleHtml+'</div></div></div>';
     }
+    html+='</div>';
   }
-  const filtered=articles.filter(a=>AI_KW.some(kw=>(a.title||'').toLowerCase().includes(kw)));
-  if(!filtered.length) return '<p style="color:var(--muted);font-size:12px">No AI-specific articles in current feed.</p>';
-  return '<div class="news-grid">'+filtered.slice(0,14).map(a=>{
-    const sc=a.score;
-    const sClr=sc>=2?'var(--bull)':sc>=1?'#56d364':sc<=-2?'var(--bear)':sc<=-1?'#f07070':'var(--muted)';
-    const bg=sc>=1?'rgba(63,185,80,.06)':sc<=-1?'rgba(248,81,73,.06)':'var(--bg3)';
-    const titleHtml=a.url?'<a href="'+esc(a.url)+'" target="_blank" rel="noopener">'+esc(a.title)+'</a>':esc(a.title);
-    return '<div class="news-item" style="background:'+bg+'"><span class="news-score" style="color:'+sClr+'">'+(sc>0?'+':'')+sc+'</span><div><div class="news-src">'+esc(a.source||'?')+'</div><div class="news-title">'+titleHtml+'</div></div></div>';
-  }).join('')+'</div>';
+  return html;
+}
+
+function renderTopPicksNews(topPicksNews){
+  if(!topPicksNews||!topPicksNews.length) return '<p style="color:var(--muted);font-size:12px">No top picks news available yet.</p>';
+  return topPicksNews.map(pick=>{
+    const articles=(pick.articles||[]).slice(0,3);
+    if(!articles.length) return '';
+    const badge='<a href="https://finance.yahoo.com/quote/'+esc(pick.ticker)+'" target="_blank" style="display:inline-block;padding:2px 8px;border-radius:4px;background:rgba(88,166,255,.15);color:var(--blue);font-size:11px;font-weight:700;text-decoration:none;margin-bottom:5px">'+esc(pick.ticker)+'</a>'
+      +'<span style="font-size:10px;color:var(--muted);margin-left:6px">'+esc(pick.name)+'</span>';
+    const arts=articles.map(a=>{
+      const sc=a.score||0;
+      const sClr=sc>=1?'var(--bull)':sc<=-1?'var(--bear)':'var(--muted)';
+      const titleHtml=a.url?'<a href="'+esc(a.url)+'" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">'+esc(a.title)+'</a>':esc(a.title);
+      return '<div style="font-size:11px;line-height:1.4;padding:3px 0;border-bottom:1px solid var(--border)"><span style="color:'+sClr+';font-weight:700;margin-right:4px">'+(sc>0?'+':'')+sc+'</span>'+titleHtml+'</div>';
+    }).join('');
+    return '<div style="margin-bottom:12px">'+badge+arts+'</div>';
+  }).join('');
 }
 
 function renderAIEtfTab(){
@@ -956,8 +971,11 @@ function renderAIEtfTab(){
   return sentimentBar
     +'<div style="padding:14px 20px"><div class="etf-grid">'+(_ETFS.etfs||[]).map(renderEtfCard).join('')+'</div></div>'
     +'<div class="lower-grid" style="padding:0 20px 14px">'
-    +'<div class="panel" style="grid-column:span 2"><h3>📅 Upcoming Earnings — AI Leaders</h3>'+renderEarningsCalendar(_ETFS.earnings)+'</div>'
-    +'<div class="panel"><h3>📰 AI &amp; Tech News</h3>'+renderAINewsPanel(_D)+'</div>'
+    +'<div style="grid-column:span 2;display:flex;flex-direction:column;gap:10px">'
+    +'<div class="panel"><h3>📰 Top Picks News</h3>'+renderTopPicksNews(_ETFS.topPicksNews)+'</div>'
+    +'<div class="panel"><h3>📅 Earnings Calendar — AI Leaders</h3>'+renderEarningsCalendar(_ETFS.earnings)+'</div>'
+    +'</div>'
+    +'<div class="panel"><h3>🤖 AI &amp; Tech News</h3>'+renderAINewsPanel()+'</div>'
     +'</div>'
     +\`<div id="footer">AI ETF Monitor &bull; \${(_ETFS.etfs||[]).length} ETFs tracked &bull; Auto-reload every 60s</div>\`;
 }
