@@ -219,10 +219,152 @@ function analyzeVolume(data) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SECTION 2.5 — ORDER FLOW: MARKET STRUCTURE, CHoCH, BOS, ORDER BLOCKS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Detect market structure and order flow events using recent swing points.
+ *
+ * Market structure:
+ *   BULLISH  = Higher Highs (HH) + Higher Lows (HL)
+ *   BEARISH  = Lower Highs (LH) + Lower Lows (LL)
+ *   RANGING  = mixed
+ *
+ * CHoCH (Change of Character) — first close against prevailing structure:
+ *   In BULLISH: close < last Higher Low  → BEARISH CHoCH (potential reversal)
+ *   In BEARISH: close > last Lower High  → BULLISH CHoCH (potential reversal)
+ *
+ * BOS (Break of Structure) — confirms the current trend direction:
+ *   In BULLISH: close > last Higher High → BULLISH BOS (continuation)
+ *   In BEARISH: close < last Lower Low   → BEARISH BOS (continuation)
+ *
+ * Displacement: 3+ consecutive full-body candles in the same direction
+ * Order Block:  last opposite-color candle immediately before a displacement
+ * Premium/Discount: price position relative to the current dealing range
+ */
+function detectMarketStructure(data) {
+    const { open, high, low, close } = data;
+    const n = close.length;
+
+    // Use a tighter lookback over the most recent ~2 trading days (100 × 30m bars)
+    const STRUCT_LB  = 3;
+    const STRUCT_WIN = Math.min(n, 100);
+    const sliceStart = n - STRUCT_WIN;
+
+    const { swingHighs: rawHighs, swingLows: rawLows } =
+        detectSwingPoints(high.slice(sliceStart), low.slice(sliceStart), STRUCT_LB);
+
+    // Re-map slice indices back to full array indices
+    const swingHighs = rawHighs.map(s => ({ index: s.index + sliceStart, price: s.price }));
+    const swingLows  = rawLows.map(s  => ({ index: s.index + sliceStart, price: s.price }));
+
+    const empty = {
+        structure: "RANGING", choch: null, bos: null,
+        hhFound: false, hlFound: false, lhFound: false, llFound: false,
+        displacement: false, displacementDir: null, orderBlock: null,
+        equilibrium: null, premiumDiscount: null, pdPct: null,
+        lastHigh: null, prevHigh: null, lastLow: null, prevLow: null,
+    };
+    if (swingHighs.length < 2 || swingLows.length < 2) return empty;
+
+    const recentHighs = swingHighs.slice(-3);
+    const recentLows  = swingLows.slice(-3);
+    const lastHigh    = recentHighs[recentHighs.length - 1];
+    const prevHigh    = recentHighs[recentHighs.length - 2];
+    const lastLow     = recentLows[recentLows.length - 1];
+    const prevLow     = recentLows[recentLows.length - 2];
+
+    const hhFound = lastHigh.price > prevHigh.price;   // Higher High
+    const hlFound = lastLow.price  > prevLow.price;    // Higher Low
+    const lhFound = lastHigh.price < prevHigh.price;   // Lower High
+    const llFound = lastLow.price  < prevLow.price;    // Lower Low
+
+    let structure = "RANGING";
+    if      (hhFound && hlFound) structure = "BULLISH";
+    else if (lhFound && llFound) structure = "BEARISH";
+
+    const cur = close[n - 1];
+
+    // CHoCH — first close against the prevailing structure
+    let choch = null;
+    if (structure === "BULLISH" && cur < lastLow.price) {
+        choch = { type: "BEARISH", level: parseFloat(lastLow.price.toFixed(2)),
+                  desc: `Broke HL at $${lastLow.price.toFixed(2)} — bearish reversal signal` };
+    } else if (structure === "BEARISH" && cur > lastHigh.price) {
+        choch = { type: "BULLISH", level: parseFloat(lastHigh.price.toFixed(2)),
+                  desc: `Broke LH at $${lastHigh.price.toFixed(2)} — bullish reversal signal` };
+    }
+
+    // BOS — closes past the last swing point in trend direction (continuation, no CHoCH)
+    let bos = null;
+    if (!choch) {
+        if (structure === "BULLISH" && cur > lastHigh.price) {
+            bos = { type: "BULLISH", level: parseFloat(lastHigh.price.toFixed(2)),
+                    desc: `Broke HH at $${lastHigh.price.toFixed(2)} — bullish continuation` };
+        } else if (structure === "BEARISH" && cur < lastLow.price) {
+            bos = { type: "BEARISH", level: parseFloat(lastLow.price.toFixed(2)),
+                    desc: `Broke LL at $${lastLow.price.toFixed(2)} — bearish continuation` };
+        }
+    }
+
+    // Displacement — 3 consecutive candles with strong bodies in same direction
+    const DISP_N = 3;
+    const candles = [];
+    for (let i = n - DISP_N; i < n; i++) {
+        if (i >= 0) candles.push({
+            body:  close[i] - open[i],
+            range: Math.max(high[i] - low[i], 0.01),
+        });
+    }
+    const allBull   = candles.every(c => c.body > 0);
+    const allBear   = candles.every(c => c.body < 0);
+    const bodyRatio = candles.reduce((s, c) => s + Math.abs(c.body) / c.range, 0) / candles.length;
+    const displacement    = (allBull || allBear) && bodyRatio > 0.55;
+    const displacementDir = displacement ? (allBull ? "BULL" : "BEAR") : null;
+
+    // Order Block — last opposite-color candle before the displacement impulse
+    let orderBlock = null;
+    if (displacement) {
+        for (let i = n - DISP_N - 1; i >= Math.max(0, n - 15); i--) {
+            const body = close[i] - open[i];
+            if (displacementDir === "BULL" && body < 0) {
+                orderBlock = { type: "BULLISH",
+                    top:    parseFloat(Math.max(open[i], close[i]).toFixed(2)),
+                    bottom: parseFloat(Math.min(open[i], close[i]).toFixed(2)) };
+                break;
+            } else if (displacementDir === "BEAR" && body > 0) {
+                orderBlock = { type: "BEARISH",
+                    top:    parseFloat(Math.max(open[i], close[i]).toFixed(2)),
+                    bottom: parseFloat(Math.min(open[i], close[i]).toFixed(2)) };
+                break;
+            }
+        }
+    }
+
+    // Premium / Discount — price position in the current swing range
+    const equil = (lastHigh.price + lastLow.price) / 2;
+    const pdPct = lastHigh.price > lastLow.price
+        ? parseFloat(((cur - lastLow.price) / (lastHigh.price - lastLow.price) * 100).toFixed(1))
+        : null;
+    const premiumDiscount = pdPct != null ? (pdPct > 50 ? "PREMIUM" : "DISCOUNT") : null;
+
+    return {
+        structure, choch, bos, hhFound, hlFound, lhFound, llFound,
+        displacement, displacementDir, orderBlock,
+        lastHigh: { index: lastHigh.index, price: parseFloat(lastHigh.price.toFixed(2)) },
+        prevHigh: { index: prevHigh.index, price: parseFloat(prevHigh.price.toFixed(2)) },
+        lastLow:  { index: lastLow.index,  price: parseFloat(lastLow.price.toFixed(2))  },
+        prevLow:  { index: prevLow.index,  price: parseFloat(prevLow.price.toFixed(2))  },
+        equilibrium:     parseFloat(equil.toFixed(2)),
+        premiumDiscount, pdPct,
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SECTION 3 — NEXT-CANDLE PREDICTION ENGINE
 // ─────────────────────────────────────────────────────────────────────────────
 
-function predictNextCandle(classic, sweep, fvg, vol, news, options = null) {
+function predictNextCandle(classic, sweep, fvg, vol, news, options = null, structure = null) {
     let bull = 0, bear = 0;
     const reasons = [];
 
@@ -268,6 +410,29 @@ function predictNextCandle(classic, sweep, fvg, vol, news, options = null) {
     else if (news.score <= -1.5) { bear += 2; reasons.push(`News STRONGLY bearish (${news.storyCount || news.articles?.length || 0} stories)`); }
     else if (news.score <= -0.5) { bear += 1; reasons.push("News mildly bearish"); }
 
+    // ── ORDER FLOW: market structure + CHoCH + BOS + displacement + P/D (max +6) ──
+    if (structure) {
+        // Market structure alignment (+1)
+        if (structure.structure === "BULLISH") { bull += 1; reasons.push("Market structure BULLISH (HH+HL)"); }
+        if (structure.structure === "BEARISH") { bear += 1; reasons.push("Market structure BEARISH (LH+LL)"); }
+
+        // Change of Character (+2) — high-weight reversal signal
+        if (structure.choch?.type === "BULLISH") { bull += 2; reasons.push(`CHoCH BULLISH: ${structure.choch.desc}`); }
+        if (structure.choch?.type === "BEARISH") { bear += 2; reasons.push(`CHoCH BEARISH: ${structure.choch.desc}`); }
+
+        // Break of Structure (+1) — trend continuation
+        if (structure.bos?.type === "BULLISH")  { bull += 1; reasons.push(`BOS BULLISH: ${structure.bos.desc}`); }
+        if (structure.bos?.type === "BEARISH")  { bear += 1; reasons.push(`BOS BEARISH: ${structure.bos.desc}`); }
+
+        // Displacement (+1) — institutional imbalance
+        if (structure.displacement && structure.displacementDir === "BULL") { bull += 1; reasons.push("Bullish displacement (institutional buying)"); }
+        if (structure.displacement && structure.displacementDir === "BEAR") { bear += 1; reasons.push("Bearish displacement (institutional selling)"); }
+
+        // Premium / Discount (+1) — entry quality
+        if (structure.premiumDiscount === "DISCOUNT") { bull += 1; reasons.push(`Price at DISCOUNT (${structure.pdPct}% of range) — buy zone`); }
+        if (structure.premiumDiscount === "PREMIUM")  { bear += 1; reasons.push(`Price at PREMIUM (${structure.pdPct}% of range) — sell zone`); }
+    }
+
     // Options chain signals (max +4 per direction)
     if (options) {
         bull += options.score.bull;
@@ -275,7 +440,7 @@ function predictNextCandle(classic, sweep, fvg, vol, news, options = null) {
         for (const r of options.score.reasons) reasons.push(`OPT: ${r}`);
     }
 
-    const maxScore   = options ? 14 : 10;
+    const maxScore   = options ? 20 : 16;
     const net        = bull - bear;
     const bias       = net > 1 ? "BULL" : net < -1 ? "BEAR" : "NEUTRAL";
     const dominant   = Math.max(bull, bear);
@@ -368,12 +533,13 @@ function computeClassicSignals(data) {
  * News sentiment is shared across symbols (market-wide).
  */
 function computeAllSignals(data, optionsData, news) {
-    const classic    = computeClassicSignals(data);
-    const sweep      = detectLiquiditySweep(data);
-    const fvg        = detectFVG(data);
-    const vol        = analyzeVolume(data);
-    const prediction = predictNextCandle(classic, sweep, fvg, vol, news, optionsData);
-    return { classic, sweep, fvg, vol, prediction };
+    const classic   = computeClassicSignals(data);
+    const sweep     = detectLiquiditySweep(data);
+    const fvg       = detectFVG(data);
+    const vol       = analyzeVolume(data);
+    const structure = detectMarketStructure(data);
+    const prediction = predictNextCandle(classic, sweep, fvg, vol, news, optionsData, structure);
+    return { classic, sweep, fvg, vol, structure, prediction };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -483,10 +649,19 @@ function sendPush(payload) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── CONSOLE REPORT HELPER ─────────────────────────────────────────────────────
-function printSymbolReport(label, classic, sweep, fvg, vol, optionsData, prediction, spreadData, aiRec) {
+function printSymbolReport(label, classic, sweep, fvg, vol, structure, optionsData, prediction, spreadData, aiRec) {
     console.log(`\n  [${label}] PRICE $${classic.price.toFixed(2)} | RSI ${classic.rsi.toFixed(1)} | MACD ${classic.macd?.toFixed(2)}`);
     console.log(`  [${label}] EMAs  9:${classic.ema9.toFixed(1)} / 21:${classic.ema21.toFixed(1)} / 200:${classic.ema200.toFixed(1)}`);
     console.log(`  [${label}] Trend ${classic.bullTrend ? "BULL" : "BEAR"} | Score Bull:${classic.bullScore}/3 Bear:${classic.bearScore}/3`);
+
+    // Order flow
+    if (structure) {
+        const strTag = structure.structure === "BULLISH" ? "(HH+HL)" : structure.structure === "BEARISH" ? "(LH+LL)" : "";
+        console.log(`  [${label}] STRUCT ${structure.structure} ${strTag} | EQ:$${structure.equilibrium} ${structure.premiumDiscount||""}(${structure.pdPct}%)`);
+        if (structure.choch) console.log(`  [${label}] CHoCH  ${structure.choch.type} @ $${structure.choch.level} — ${structure.choch.desc}`);
+        if (structure.bos)   console.log(`  [${label}] BOS    ${structure.bos.type}   @ $${structure.bos.level} — ${structure.bos.desc}`);
+        if (structure.displacement) console.log(`  [${label}] DISP   ${structure.displacementDir} displacement${structure.orderBlock ? " | OB " + structure.orderBlock.type + " $" + structure.orderBlock.bottom + "–$" + structure.orderBlock.top : ""}`);
+    }
 
     if (sweep.bullishSweep)      console.log(`  [${label}] Sweep BULLISH $${sweep.sweptLevel?.toFixed(2)}`);
     else if (sweep.bearishSweep) console.log(`  [${label}] Sweep BEARISH $${sweep.sweptLevel?.toFixed(2)}`);
@@ -561,8 +736,8 @@ async function check() {
         ]);
 
         // ── CONSOLE REPORT ────────────────────────────────────────────────────
-        printSymbolReport("NDX", ndxSig.classic, ndxSig.sweep, ndxSig.fvg, ndxSig.vol, ndxOptions, ndxSig.prediction, ndxSpread, ndxAI);
-        printSymbolReport("SPX", spxSig.classic, spxSig.sweep, spxSig.fvg, spxSig.vol, spxOptions, spxSig.prediction, spxSpread, spxAI);
+        printSymbolReport("NDX", ndxSig.classic, ndxSig.sweep, ndxSig.fvg, ndxSig.vol, ndxSig.structure, ndxOptions, ndxSig.prediction, ndxSpread, ndxAI);
+        printSymbolReport("SPX", spxSig.classic, spxSig.sweep, spxSig.fvg, spxSig.vol, spxSig.structure, spxOptions, spxSig.prediction, spxSpread, spxAI);
 
         // ── SIGNAL ACTIONS (per symbol) ───────────────────────────────────────
         for (const [sym, sig, opts, spread, aiRec] of [
@@ -588,9 +763,13 @@ async function check() {
             if (newSide) lastSignalSide[sym] = newSide;
 
             const smcSummary = [
+                sig.structure?.choch ? `CHoCH-${sig.structure.choch.type}@$${sig.structure.choch.level}` : "",
+                sig.structure?.bos   ? `BOS-${sig.structure.bos.type}@$${sig.structure.bos.level}` : "",
+                sig.structure?.structure && sig.structure.structure !== "RANGING" ? `Struct:${sig.structure.structure}` : "",
                 sweep.bullishSweep ? "BullSweep" : sweep.bearishSweep ? "BearSweep" : "",
                 fvg.inBullFVG ? "InBullFVG" : fvg.inBearFVG ? "InBearFVG" : "",
                 vol.climax ? `VolClimax(${vol.buyingClimax ? "buy" : "sell"})` : "",
+                sig.structure?.displacement ? `Disp-${sig.structure.displacementDir}` : "",
             ].filter(Boolean).join(" | ") || "No SMC trigger";
 
             if (action) {

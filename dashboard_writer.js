@@ -150,7 +150,7 @@ function buildScreenerSection(sc) {
 
 // ── SNAPSHOT BUILDER ──────────────────────────────────────────────────────────
 
-function buildSnapshot({ classic, sweep, fvg, vol, news, options, prediction, spread, ai }) {
+function buildSnapshot({ classic, sweep, fvg, vol, structure, news, options, prediction, spread, ai }) {
     return {
         ts:    new Date().toISOString(),
         price: parseFloat(classic.price.toFixed(2)),
@@ -191,6 +191,18 @@ function buildSnapshot({ classic, sweep, fvg, vol, news, options, prediction, sp
             sellingClimax: vol.sellingClimax,
             absorption:    vol.absorption,
             deltaProxy:    parseFloat(vol.deltaProxy.toFixed(2)),
+            // Order Flow
+            mktStructure:    structure?.structure    || null,
+            choch:           structure?.choch?.type  || null,
+            chochLevel:      structure?.choch?.level ?? null,
+            bos:             structure?.bos?.type    || null,
+            bosLevel:        structure?.bos?.level   ?? null,
+            displacement:    structure?.displacement  || false,
+            dispDir:         structure?.displacementDir || null,
+            orderBlock:      structure?.orderBlock    || null,
+            premiumDiscount: structure?.premiumDiscount || null,
+            pdPct:           structure?.pdPct         ?? null,
+            equilibrium:     structure?.equilibrium   ?? null,
         },
 
         news: {
@@ -476,6 +488,18 @@ tr:hover td{background:rgba(255,255,255,.03)}
 @media(max-width:1300px){.etf-grid{grid-template-columns:repeat(4,1fr)}}
 @media(max-width:900px){.etf-grid{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:600px){.etf-grid{grid-template-columns:repeat(2,1fr)}}
+/* ORDER FLOW PANEL */
+.of-struct{display:inline-flex;align-items:center;gap:6px;margin-bottom:8px}
+.of-struct-lbl{font-size:18px;font-weight:800}
+.of-event{display:flex;align-items:flex-start;gap:8px;padding:5px 0;border-bottom:1px solid var(--border)}
+.of-event:last-child{border-bottom:none}
+.of-event-type{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;width:52px;flex-shrink:0;padding-top:1px}
+.of-event-detail{font-size:11px;color:var(--text);line-height:1.4}
+.of-event-level{font-size:12px;font-weight:700}
+.of-pd{display:flex;align-items:center;gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
+.of-pd-bar{flex:1;height:8px;background:var(--bg3);border-radius:4px;overflow:hidden;position:relative}
+.of-pd-fill{height:100%;border-radius:4px}
+.of-ob{font-size:11px;padding:5px 8px;border-radius:5px;margin-top:6px}
 /* SCROLLBAR */
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:var(--bg2)}
@@ -553,6 +577,14 @@ function spreadBadge(sp){
 function smcBadge(smc){
   if(!smc) return '';
   const parts=[];
+  // Order flow — highest priority, shown first
+  if(smc.choch==='BULLISH') parts.push('<span class="badge bg-bull" style="font-size:10px;background:rgba(63,185,80,.25)">CHoCH↑</span>');
+  if(smc.choch==='BEARISH') parts.push('<span class="badge bg-bear" style="font-size:10px;background:rgba(248,81,73,.25)">CHoCH↓</span>');
+  if(smc.bos==='BULLISH')   parts.push('<span class="badge bg-bull" style="font-size:10px">BOS↑</span>');
+  if(smc.bos==='BEARISH')   parts.push('<span class="badge bg-bear" style="font-size:10px">BOS↓</span>');
+  if(smc.displacement&&smc.dispDir==='BULL') parts.push('<span class="badge bg-bull" style="font-size:10px">Disp↑</span>');
+  if(smc.displacement&&smc.dispDir==='BEAR') parts.push('<span class="badge bg-bear" style="font-size:10px">Disp↓</span>');
+  // Classic SMC
   if(smc.sweep==='BULL') parts.push('<span class="badge bg-bull" style="font-size:10px">⚡ BullSweep</span>');
   if(smc.sweep==='BEAR') parts.push('<span class="badge bg-bear" style="font-size:10px">⚡ BearSweep</span>');
   if(smc.inBullFVG) parts.push('<span class="badge bg-bull" style="font-size:10px">FVG↑</span>');
@@ -841,6 +873,81 @@ function renderAIPanel(ai){
 </div>\`;
 }
 
+function renderOrderFlowPanel(smc){
+  if(!smc) return \`<div class="panel"><h3>Order Flow</h3><p style="color:var(--muted);font-size:12px">No data yet</p></div>\`;
+  const struct=smc.mktStructure||'RANGING';
+  const sClr=struct==='BULLISH'?'var(--bull)':struct==='BEARISH'?'var(--bear)':'var(--neutral)';
+  const sBg=struct==='BULLISH'?'rgba(63,185,80,.10)':struct==='BEARISH'?'rgba(248,81,73,.10)':'rgba(210,153,34,.06)';
+  const hhlhLabel=struct==='BULLISH'?'HH + HL':struct==='BEARISH'?'LH + LL':'No clear structure';
+
+  const events=[];
+  if(smc.choch){
+    const cClr=smc.choch==='BULLISH'?'var(--bull)':'var(--bear)';
+    events.push('<div class="of-event">'
+      +'<span class="of-event-type" style="color:'+cClr+'">CHoCH</span>'
+      +'<div><div class="of-event-level" style="color:'+cClr+'">'+(smc.choch==='BULLISH'?'↑ Bullish':'↓ Bearish')
+      +' @ $'+fmt(smc.chochLevel,2)+'</div>'
+      +'<div style="font-size:10px;color:var(--muted)">Change of Character — potential reversal</div>'
+      +'</div></div>');
+  }
+  if(smc.bos){
+    const bClr=smc.bos==='BULLISH'?'var(--bull)':'var(--bear)';
+    events.push('<div class="of-event">'
+      +'<span class="of-event-type" style="color:'+bClr+'">BOS</span>'
+      +'<div><div class="of-event-level" style="color:'+bClr+'">'+(smc.bos==='BULLISH'?'↑ Bullish':'↓ Bearish')
+      +' @ $'+fmt(smc.bosLevel,2)+'</div>'
+      +'<div style="font-size:10px;color:var(--muted)">Break of Structure — trend continuation</div>'
+      +'</div></div>');
+  }
+  if(smc.displacement){
+    const dClr=smc.dispDir==='BULL'?'var(--bull)':'var(--bear)';
+    events.push('<div class="of-event">'
+      +'<span class="of-event-type" style="color:'+dClr+'">DISP</span>'
+      +'<div><div class="of-event-level" style="color:'+dClr+'">'+(smc.dispDir==='BULL'?'↑ Bullish':'↓ Bearish')+' Displacement</div>'
+      +'<div style="font-size:10px;color:var(--muted)">Strong-body candles — institutional imbalance</div>'
+      +'</div></div>');
+  }
+  if(!events.length){
+    events.push('<div style="font-size:12px;color:var(--muted);padding:6px 0">No active order flow event</div>');
+  }
+
+  // Order block
+  let obHtml='';
+  if(smc.orderBlock){
+    const oClr=smc.orderBlock.type==='BULLISH'?'var(--bull)':'var(--bear)';
+    const oBg=smc.orderBlock.type==='BULLISH'?'rgba(63,185,80,.07)':'rgba(248,81,73,.07)';
+    obHtml='<div class="of-ob" style="background:'+oBg+';border:1px solid '+oClr+';color:'+oClr+'">'
+      +'<b>'+esc(smc.orderBlock.type)+' Order Block</b> $'+fmt(smc.orderBlock.bottom,2)+' – $'+fmt(smc.orderBlock.top,2)
+      +'</div>';
+  }
+
+  // Premium / Discount bar
+  let pdHtml='';
+  if(smc.pdPct!=null){
+    const pdClr=smc.premiumDiscount==='PREMIUM'?'var(--bear)':'var(--bull)';
+    const pdPct=Math.max(0,Math.min(100,smc.pdPct));
+    pdHtml='<div class="of-pd">'
+      +'<span style="font-size:10px;color:var(--muted);width:55px">DISCOUNT</span>'
+      +'<div class="of-pd-bar"><div class="of-pd-fill" style="width:'+pdPct+'%;background:'+pdClr+'"></div></div>'
+      +'<span style="font-size:10px;color:var(--muted);width:50px;text-align:right">PREMIUM</span>'
+      +'</div>'
+      +'<div style="font-size:11px;text-align:center;margin-top:3px;color:'+pdClr+'">'
+      +esc(smc.premiumDiscount||'')+' ('+smc.pdPct+'%) &bull; EQ $'+fmt(smc.equilibrium,2)
+      +'</div>';
+  }
+
+  return \`<div class="panel">
+  <h3>📊 Order Flow</h3>
+  <div class="of-struct" style="background:\${sBg};padding:6px 10px;border-radius:6px;border:1px solid \${sClr};width:100%;margin-bottom:10px">
+    <span class="of-struct-lbl" style="color:\${sClr}">\${esc(struct)}</span>
+    <span style="font-size:11px;color:var(--muted)">\${esc(hhlhLabel)}</span>
+  </div>
+  \${events.join('')}
+  \${obHtml}
+  \${pdHtml}
+</div>\`;
+}
+
 function renderNewsFeed(news){
   if(!news||!news.topStories||!news.topStories.length){
     return \`<div id="news-wrap"><h3>News Feed</h3><p style="color:var(--muted);font-size:12px">No stories available</p></div>\`;
@@ -989,7 +1096,8 @@ function renderTabContent(sym){
    +renderCards(latest)
    +renderSparkline(snaps,sym)
    +renderHistoryTable(snaps)
-   +'<div class="lower-grid">'
+   +'<div class="lower-grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">'
+   +renderOrderFlowPanel(latest?.smc)
    +renderOptionsPanel(latest?.options)
    +renderSpreadPanel(latest?.spread)
    +renderAIPanel(latest?.ai)
