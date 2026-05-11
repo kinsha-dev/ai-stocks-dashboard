@@ -553,19 +553,20 @@ function signalSide(sig) {
     return null;
 }
 
-function buildFlipPayload(sym, prevSide, newSide, classic, prediction, aiRec) {
+function buildFlipPayload(sym, prevSide, newSide, classic, prediction, aiRec, source = "SIGNAL") {
     const arrow   = `${prevSide} → ${newSide}`;
     const emoji   = newSide === "BUY" ? "📈" : "📉";
+    const srcTag  = source === "AI" ? " [AI]" : source === "SMC" ? " [SMC]" : "";
     let message   = `$${classic.price.toFixed(2)} | RSI ${classic.rsi.toFixed(1)} | Bias ${prediction.bias} ${prediction.confidence}%\n`;
-    message      += `Flipped from ${prevSide} to ${newSide}`;
+    message      += `Flipped ${prevSide} → ${newSide}${srcTag}`;
     if (aiRec) {
         message += `\nAI: ${aiRec.action} (${aiRec.conviction})`;
         if (aiRec.reasoning) message += ` — ${aiRec.reasoning.slice(0, 100)}`;
     }
     return {
-        title:    `🔄${emoji} ${sym} SIGNAL FLIP: ${arrow}`,
+        title:    `🔄${emoji} ${sym} FLIP${srcTag}: ${arrow}`,
         message:  message.trim(),
-        priority: 5,
+        priority: source === "AI" ? 4 : 5,  // AI flips = high (4), classic/SMC = urgent (5)
         tags:     [newSide === "BUY" ? "chart_increasing" : "chart_decreasing", "rotating_light"],
     };
 }
@@ -749,16 +750,22 @@ async function check() {
             if (classic.strongBuy)  action = "STRONG_BUY";
             if (classic.strongSell) action = "STRONG_SELL";
 
-            // Determine effective signal direction (classic or SMC) for flip detection
-            const effectiveAction = action ||
-                (prediction.confidence >= 70 && prediction.bias !== "NEUTRAL"
-                    ? (prediction.bias === "BULL" ? "SMC_BULL_SETUP" : "SMC_BEAR_SETUP")
-                    : null);
+            // Determine effective signal direction for flip detection.
+            // Priority: (1) classic signal  (2) SMC prediction ≥70%  (3) AI advisor
+            const smcAction = prediction.confidence >= 70 && prediction.bias !== "NEUTRAL"
+                ? (prediction.bias === "BULL" ? "SMC_BULL_SETUP" : "SMC_BEAR_SETUP")
+                : null;
+            const aiAction  = aiRec?.action === "BUY"  ? "AI_BUY"
+                            : aiRec?.action === "SELL" ? "AI_SELL"
+                            : null;
+            const effectiveAction = action || smcAction || aiAction;
+            const flipSource = action ? "SIGNAL" : smcAction ? "SMC" : aiAction ? "AI" : null;
+
             const newSide  = signalSide(effectiveAction);
             const prevSide = lastSignalSide[sym];
             if (prevSide && newSide && prevSide !== newSide) {
-                console.log(`\n  *** [${sym}] SIGNAL FLIP: ${prevSide} → ${newSide} ***`);
-                await sendPush(buildFlipPayload(sym, prevSide, newSide, classic, prediction, aiRec));
+                console.log(`\n  *** [${sym}] SIGNAL FLIP (${flipSource}): ${prevSide} → ${newSide} ***`);
+                await sendPush(buildFlipPayload(sym, prevSide, newSide, classic, prediction, aiRec, flipSource));
             }
             if (newSide) lastSignalSide[sym] = newSide;
 
