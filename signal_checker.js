@@ -64,6 +64,12 @@ const SWEEP_LB  = 50;
 // Dedup: don't repeat the same STRONG signal back-to-back (per symbol)
 const lastSignal     = {};   // e.g. { NDX: "STRONG_BUY", SPX: null }
 const lastSignalSide = {};   // e.g. { NDX: "BUY", SPX: "SELL" } — for flip detection
+const lastFlipTime   = {};   // e.g. { NDX: 1715000000000 }   — cooldown tracking
+
+// Flip confirmation thresholds
+const FLIP_COOLDOWN_MS  = 15 * 60 * 1000;  // 15 min between flip alerts per symbol
+const FLIP_MIN_SCORE    = 3;                // min confirmation score for classic/SMC flips
+const FLIP_AI_MIN_SCORE = 4;                // higher bar when AI is the only trigger
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SECTION 1 — CLASSIC MATH HELPERS
@@ -553,20 +559,75 @@ function signalSide(sig) {
     return null;
 }
 
-function buildFlipPayload(sym, prevSide, newSide, classic, prediction, aiRec, source = "SIGNAL") {
-    const arrow   = `${prevSide} → ${newSide}`;
-    const emoji   = newSide === "BUY" ? "📈" : "📉";
-    const srcTag  = source === "AI" ? " [AI]" : source === "SMC" ? " [SMC]" : "";
-    let message   = `$${classic.price.toFixed(2)} | RSI ${classic.rsi.toFixed(1)} | Bias ${prediction.bias} ${prediction.confidence}%\n`;
-    message      += `Flipped ${prevSide} → ${newSide}${srcTag}`;
+/**
+ * Score how well a potential flip is confirmed by independent indicators.
+ * Higher score = more conviction the reversal is real, not noise.
+ *
+ * Max possible score ≈ 11 (AI + bias + EMA200 + cross + bullScore + CHoCH + BOS + structure + disp)
+ *
+ * Thresholds:
+ *   Classic/SMC source  → need >= FLIP_MIN_SCORE    (3)
+ *   AI-only source      → need >= FLIP_AI_MIN_SCORE (4)  higher bar because AI oscillates
+ */
+function scoreTrendReversal(newSide, classic, prediction, structure, aiRec) {
+    const isBuy = newSide === "BUY";
+    let score = 0;
+    const reasons = [];
+
+    // AI agreement (+1)
+    if (isBuy  && aiRec?.action === "BUY")  { score++; reasons.push("AI:BUY"); }
+    if (!isBuy && aiRec?.action === "SELL") { score++; reasons.push("AI:SELL"); }
+
+    // Prediction bias agreement (+1, any confidence)
+    if (isBuy  && prediction.bias === "BULL") { score++; reasons.push(`Bias:BULL(${prediction.confidence}%)`); }
+    if (!isBuy && prediction.bias === "BEAR") { score++; reasons.push(`Bias:BEAR(${prediction.confidence}%)`); }
+
+    // EMA 200 macro trend (+1)
+    if (isBuy  && classic.bullTrend) { score++; reasons.push("EMA200:bull"); }
+    if (!isBuy && classic.bearTrend) { score++; reasons.push("EMA200:bear"); }
+
+    // EMA 9/21 crossover on this bar (+1) — freshest momentum signal
+    if (isBuy  && classic.emaCrossUp)   { score++; reasons.push("EMACross:up"); }
+    if (!isBuy && classic.emaCrossDown) { score++; reasons.push("EMACross:down"); }
+
+    // Classic indicator score alignment (+1)
+    if (isBuy  && classic.bullScore >= 2) { score++; reasons.push(`ClScore:${classic.bullScore}/3`); }
+    if (!isBuy && classic.bearScore >= 2) { score++; reasons.push(`ClScore:${classic.bearScore}/3`); }
+
+    // CHoCH — highest-weight structure event (+2)
+    if (isBuy  && structure?.choch?.type === "BULLISH") { score += 2; reasons.push("CHoCH:bull"); }
+    if (!isBuy && structure?.choch?.type === "BEARISH") { score += 2; reasons.push("CHoCH:bear"); }
+
+    // BOS — trend continuation confirmation (+1)
+    if (isBuy  && structure?.bos?.type === "BULLISH") { score++; reasons.push("BOS:bull"); }
+    if (!isBuy && structure?.bos?.type === "BEARISH") { score++; reasons.push("BOS:bear"); }
+
+    // Overall market structure alignment (+1)
+    if (isBuy  && structure?.structure === "BULLISH") { score++; reasons.push("Struct:BULLISH"); }
+    if (!isBuy && structure?.structure === "BEARISH") { score++; reasons.push("Struct:BEARISH"); }
+
+    // Institutional displacement in flip direction (+1)
+    if (isBuy  && structure?.displacement && structure?.displacementDir === "BULL") { score++; reasons.push("Disp:bull"); }
+    if (!isBuy && structure?.displacement && structure?.displacementDir === "BEAR") { score++; reasons.push("Disp:bear"); }
+
+    return { score, reasons };
+}
+
+function buildFlipPayload(sym, prevSide, newSide, classic, prediction, aiRec, source = "SIGNAL", score = 0, reasons = []) {
+    const arrow  = `${prevSide} → ${newSide}`;
+    const emoji  = newSide === "BUY" ? "📈" : "📉";
+    const srcTag = source === "AI" ? " [AI]" : source === "SMC" ? " [SMC]" : "";
+    let message  = `$${classic.price.toFixed(2)} | RSI ${classic.rsi.toFixed(1)} | Bias ${prediction.bias} ${prediction.confidence}%\n`;
+    message     += `Confirmed ${prevSide} → ${newSide}${srcTag} (${score}pt)\n`;
+    message     += reasons.join(" · ");
     if (aiRec) {
         message += `\nAI: ${aiRec.action} (${aiRec.conviction})`;
-        if (aiRec.reasoning) message += ` — ${aiRec.reasoning.slice(0, 100)}`;
+        if (aiRec.reasoning) message += ` — ${aiRec.reasoning.slice(0, 80)}`;
     }
     return {
-        title:    `🔄${emoji} ${sym} FLIP${srcTag}: ${arrow}`,
+        title:    `🔄${emoji} ${sym} CONFIRMED FLIP${srcTag}: ${arrow}`,
         message:  message.trim(),
-        priority: source === "AI" ? 4 : 5,  // AI flips = high (4), classic/SMC = urgent (5)
+        priority: source === "AI" ? 4 : 5,
         tags:     [newSide === "BUY" ? "chart_increasing" : "chart_decreasing", "rotating_light"],
     };
 }
@@ -763,9 +824,28 @@ async function check() {
 
             const newSide  = signalSide(effectiveAction);
             const prevSide = lastSignalSide[sym];
+
             if (prevSide && newSide && prevSide !== newSide) {
-                console.log(`\n  *** [${sym}] SIGNAL FLIP (${flipSource}): ${prevSide} → ${newSide} ***`);
-                await sendPush(buildFlipPayload(sym, prevSide, newSide, classic, prediction, aiRec, flipSource));
+                // Score the reversal against independent confirmation factors
+                const { score: flipScore, reasons: flipReasons } =
+                    scoreTrendReversal(newSide, classic, prediction, sig.structure, aiRec);
+
+                const minScore   = flipSource === "AI" ? FLIP_AI_MIN_SCORE : FLIP_MIN_SCORE;
+                const now        = Date.now();
+                const cooldownOk = !lastFlipTime[sym] || (now - lastFlipTime[sym]) >= FLIP_COOLDOWN_MS;
+                const confirmed  = flipScore >= minScore && cooldownOk;
+
+                if (confirmed) {
+                    console.log(`\n  *** [${sym}] CONFIRMED FLIP (${flipSource} score:${flipScore}/${minScore}): ${prevSide} → ${newSide} ***`);
+                    console.log(`  Confirmations: ${flipReasons.join(" · ")}`);
+                    await sendPush(buildFlipPayload(sym, prevSide, newSide, classic, prediction, aiRec, flipSource, flipScore, flipReasons));
+                    lastFlipTime[sym] = now;
+                } else {
+                    const why = !cooldownOk
+                        ? `cooldown (${Math.round((FLIP_COOLDOWN_MS - (now - lastFlipTime[sym])) / 60000)}min left)`
+                        : `score ${flipScore}/${minScore} (${flipReasons.join(", ") || "no confirmations"})`;
+                    console.log(`  [${sym}] Flip ${prevSide}→${newSide} suppressed — ${why}`);
+                }
             }
             if (newSide) lastSignalSide[sym] = newSide;
 
