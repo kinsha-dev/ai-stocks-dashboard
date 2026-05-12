@@ -66,6 +66,9 @@ const lastSignal     = {};   // e.g. { NDX: "STRONG_BUY", SPX: null }
 const lastSignalSide = {};   // e.g. { NDX: "BUY", SPX: "SELL" } — for flip detection
 const lastFlipTime   = {};   // e.g. { NDX: 1715000000000 }   — cooldown tracking
 
+// AI sector sentiment tracking — push when sector label changes
+let lastAISectorSentiment = null;  // e.g. "Bullish", "Bearish", "Neutral", …
+
 // Flip confirmation thresholds
 const FLIP_COOLDOWN_MS  = 30 * 60 * 1000;  // 30 min between flip alerts per symbol
 const FLIP_MIN_SCORE    = 3;                // min confirmation score for classic/SMC flips
@@ -215,12 +218,17 @@ function analyzeVolume(data) {
     const closePos   = range > 0 ? (close[i] - low[i]) / range : 0.5;
     const deltaProxy = range > 0 ? (close[i] - open[i]) / range : 0;
     const vol5Avg    = volume.slice(i - 5, i).reduce((a, b) => a + b, 0) / 5;
+    // Directional volume: above-average volume that closes in a clear direction
+    const positiveVolume = aboveAvg && close[i] > open[i];  // bull candle on strong volume
+    const negativeVolume = aboveAvg && close[i] < open[i];  // bear candle on strong volume
+
     return {
         currentVol: curVol, avgVol, volRatio: avgVol > 0 ? curVol / avgVol : 1,
         aboveAvg, climax, buyingClimax: climax && closePos > 0.7,
         sellingClimax: climax && closePos < 0.3,
         absorption: aboveAvg && bodyPct < 0.2,
         deltaProxy, volumeRising: curVol > vol5Avg, closePosition: closePos,
+        positiveVolume, negativeVolume,
     };
 }
 
@@ -402,18 +410,28 @@ function predictNextCandle(classic, sweep, fvg, vol, news, options = null, struc
         if (fvg.nearestBearFVG && Math.abs(classic.price - fvg.nearestBearFVG.bottom) / classic.price < 0.005) { bear += 1; reasons.push("Near bear FVG resistance"); }
     }
 
-    // Volume (+1)
+    // Volume — climax signals (+1), directional volume confirmation (+1)
     if (vol.buyingClimax)  { bull += 1; reasons.push("Buying climax (exhaustion → potential reversal up)"); }
     if (vol.sellingClimax) { bear += 1; reasons.push("Selling climax (exhaustion → potential reversal down)"); }
     if (!vol.buyingClimax && !vol.sellingClimax) {
         if (vol.deltaProxy > 0.5 && vol.aboveAvg)  { bull += 1; reasons.push("Strong bull volume delta"); }
         if (vol.deltaProxy < -0.5 && vol.aboveAvg) { bear += 1; reasons.push("Strong bear volume delta"); }
     }
+    // Positive / negative volume: confirmed directional volume (above avg + matching close)
+    if (vol.positiveVolume) { bull += 1; reasons.push("Positive volume (bull candle, above-avg vol)"); }
+    if (vol.negativeVolume) { bear += 1; reasons.push("Negative volume (bear candle, above-avg vol)"); }
 
-    // News sentiment (max +2)
-    if      (news.score >= 1.5)  { bull += 2; reasons.push(`News STRONGLY bullish (${news.storyCount || news.articles?.length || 0} stories)`); }
+    // EMA21 slope — sustained trend direction (+1)
+    if (classic.ema21TrendUp)   { bull += 1; reasons.push("EMA21 trending up (slope +)"); }
+    if (classic.ema21TrendDown) { bear += 1; reasons.push("EMA21 trending down (slope -)"); }
+
+    // News sentiment — tiered: minor (+1), strong (+2), major breaking news (+3)
+    const storyCount = news.storyCount || news.articles?.length || 0;
+    if      (news.score >= 2.5)  { bull += 3; reasons.push(`News MAJOR bullish event (${storyCount} stories)`); }
+    else if (news.score >= 1.5)  { bull += 2; reasons.push(`News STRONGLY bullish (${storyCount} stories)`); }
     else if (news.score >= 0.5)  { bull += 1; reasons.push("News mildly bullish"); }
-    else if (news.score <= -1.5) { bear += 2; reasons.push(`News STRONGLY bearish (${news.storyCount || news.articles?.length || 0} stories)`); }
+    else if (news.score <= -2.5) { bear += 3; reasons.push(`News MAJOR bearish event (${storyCount} stories)`); }
+    else if (news.score <= -1.5) { bear += 2; reasons.push(`News STRONGLY bearish (${storyCount} stories)`); }
     else if (news.score <= -0.5) { bear += 1; reasons.push("News mildly bearish"); }
 
     // ── ORDER FLOW: market structure + CHoCH + BOS + displacement + P/D (max +6) ──
@@ -446,7 +464,8 @@ function predictNextCandle(classic, sweep, fvg, vol, news, options = null, struc
         for (const r of options.score.reasons) reasons.push(`OPT: ${r}`);
     }
 
-    const maxScore   = options ? 20 : 16;
+    // maxScore = 16 base + 1 (news tier3) + 1 (positiveVolume) + 1 (ema21 slope) = 19
+    const maxScore   = options ? 23 : 19;
     const net        = bull - bear;
     const bias       = net > 1 ? "BULL" : net < -1 ? "BEAR" : "NEUTRAL";
     const dominant   = Math.max(bull, bear);
@@ -524,6 +543,9 @@ function computeClassicSignals(data) {
     const recentCrossDown = i >= 3 && [i, i-1, i-2].some(j => crossunder(ema9, ema21, j));
     // Alignment: EMA9 position relative to EMA21 (persistent trend direction)
     const ema9AboveEma21 = ema9[i] > ema21[i];
+    // EMA21 slope — is EMA21 itself trending up or down? (compare to 3 bars ago)
+    const ema21TrendUp   = i >= 3 && ema21[i] !== undefined && ema21[i - 3] !== undefined && ema21[i] > ema21[i - 3];
+    const ema21TrendDown = i >= 3 && ema21[i] !== undefined && ema21[i - 3] !== undefined && ema21[i] < ema21[i - 3];
     const macdCrossUp  = crossover(macdLine, sigLine, i);
     const macdCrossDown= crossunder(macdLine, sigLine, i);
     const bullScore    = (ema9AboveEma21 ? 1 : 0) + (macdBull ? 1 : 0) + (rsiBull ? 1 : 0);
@@ -532,7 +554,7 @@ function computeClassicSignals(data) {
     const shortSignal  = emaCrossDown && bearTrend && rsiBear && macdCrossDown && volOk;
     const strongBuy    = longSignal  && bullScore >= 3;
     const strongSell   = shortSignal && bearScore >= 3;
-    return { price: close[i], rsi: rsiVal, bullScore, bearScore, longSignal, shortSignal, strongBuy, strongSell, bullTrend, bearTrend, rsiBull, rsiBear, emaCrossUp, emaCrossDown, recentCrossUp, recentCrossDown, ema9AboveEma21, macdCrossUp, macdCrossDown, ema9: ema9[i], ema21: ema21[i], ema200: ema200[i], macd: macdLine[i] };
+    return { price: close[i], rsi: rsiVal, bullScore, bearScore, longSignal, shortSignal, strongBuy, strongSell, bullTrend, bearTrend, rsiBull, rsiBear, emaCrossUp, emaCrossDown, recentCrossUp, recentCrossDown, ema9AboveEma21, ema21TrendUp, ema21TrendDown, macdCrossUp, macdCrossDown, ema9: ema9[i], ema21: ema21[i], ema200: ema200[i], macd: macdLine[i] };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -800,14 +822,32 @@ async function check() {
         const spxSpread = recommendSpread(spxOptions, spxSig.prediction);
 
         // ── STEP 4: AI TRADE ADVISORS + ETF MONITOR (parallel) ───────────────
-        const [ndxAI, spxAI] = await Promise.all([
+        const [ndxAI, spxAI, etfData] = await Promise.all([
             askOllama({ symbol: "NDX", ...ndxSig, news, options: ndxOptions, spread: ndxSpread })
                 .catch(e => { console.warn(`  [WARN] Ollama NDX: ${e.message}`); return null; }),
             askOllama({ symbol: "SPX", ...spxSig, news, options: spxOptions, spread: spxSpread })
                 .catch(e => { console.warn(`  [WARN] Ollama SPX: ${e.message}`); return null; }),
             fetchAIETFData()
-                .catch(e => { console.warn(`  [WARN] AI ETF: ${e.message}`); }),
+                .catch(e => { console.warn(`  [WARN] AI ETF: ${e.message}`); return null; }),
         ]);
+
+        // ── AI SECTOR SENTIMENT CHANGE ALERT ──────────────────────────────────
+        if (etfData?.sentiment?.label) {
+            const curLabel = etfData.sentiment.label;
+            if (lastAISectorSentiment && lastAISectorSentiment !== curLabel) {
+                console.log(`\n  *** AI SECTOR SENTIMENT SHIFT: ${lastAISectorSentiment} → ${curLabel} ***`);
+                const { emoji, score: sScore, avgDayChg } = etfData.sentiment;
+                const direction = sScore > 0 ? "BULLISH" : sScore < 0 ? "BEARISH" : "NEUTRAL";
+                const priority  = Math.abs(sScore) >= 2 ? 5 : 4;  // Strongly Bull/Bear = urgent
+                await sendPush({
+                    title:    `${emoji} AI SECTOR SHIFT: ${lastAISectorSentiment} → ${curLabel}`,
+                    message:  `AI/Semiconductor sector sentiment changed.\nNew: ${curLabel} ${emoji} | Avg day chg: ${avgDayChg >= 0 ? "+" : ""}${avgDayChg}%\nBull ETFs: ${etfData.sentiment.bullCount}/${etfData.sentiment.total} | Trend: ${direction}`,
+                    priority,
+                    tags: [sScore > 0 ? "chart_increasing" : sScore < 0 ? "chart_decreasing" : "scales"],
+                }).catch(e => console.warn(`  [WARN] Sector push: ${e.message}`));
+            }
+            lastAISectorSentiment = curLabel;
+        }
 
         // ── CONSOLE REPORT ────────────────────────────────────────────────────
         printSymbolReport("NDX", ndxSig.classic, ndxSig.sweep, ndxSig.fvg, ndxSig.vol, ndxSig.structure, ndxOptions, ndxSig.prediction, ndxSpread, ndxAI);

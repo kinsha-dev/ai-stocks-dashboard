@@ -172,6 +172,25 @@ const AI_STOCKS = [
     // ── AI Energy & Nuclear (powering data centers) ───────────────────────────
     { ticker: "STEM",  name: "Stem Inc",               sector: "AI Energy" },
     { ticker: "OKLO",  name: "Oklo",                   sector: "Nuclear/AI Power" },
+    { ticker: "VST",   name: "Vistra Corp",            sector: "AI Energy" },
+    { ticker: "CEG",   name: "Constellation Energy",   sector: "Nuclear/AI Power" },
+    { ticker: "GEV",   name: "GE Vernova",             sector: "AI Energy Infra" },
+    { ticker: "TLN",   name: "Talen Energy",           sector: "AI Energy" },
+    { ticker: "NRG",   name: "NRG Energy",             sector: "AI Energy" },
+    { ticker: "ENPH",  name: "Enphase Energy",         sector: "AI CleanTech" },
+    { ticker: "FSLR",  name: "First Solar",            sector: "AI CleanTech" },
+    { ticker: "HASI",  name: "HA Sustainable Infra",   sector: "AI Energy Finance" },
+    { ticker: "ARRY",  name: "Array Technologies",     sector: "AI CleanTech" },
+    { ticker: "AMRC",  name: "Ameresco",               sector: "AI Energy" },
+
+    // ── AI Infrastructure (servers, storage, networking) ─────────────────────
+    { ticker: "PSTG",  name: "Pure Storage",           sector: "AI Storage" },
+    { ticker: "NTNX",  name: "Nutanix",                sector: "AI Cloud Infra" },
+    { ticker: "CIEN",  name: "Ciena Corp",             sector: "AI Networking" },
+    { ticker: "GLW",   name: "Corning",                sector: "AI Optical" },
+    { ticker: "NTAP",  name: "NetApp",                 sector: "AI Storage" },
+    { ticker: "COHR",  name: "Coherent Corp",          sector: "AI Optical" },
+    { ticker: "HPE",   name: "HPE",                    sector: "AI Infrastructure" },
 
     // ── AI Marketing / Analytics / Other ─────────────────────────────────────
     { ticker: "OPEN",  name: "Opendoor Technologies",  sector: "AI Real Estate" },
@@ -681,6 +700,12 @@ function scoreStock(data, universe) {
     if (perf.r3m > 0.10)  signals.push(`+${(perf.r3m * 100).toFixed(1)}% 3M`);
     if (perf.r6m > 0.15)  signals.push(`+${(perf.r6m * 100).toFixed(1)}% 6M`);
     if (perf.r1y > 0.25)  signals.push(`+${(perf.r1y * 100).toFixed(1)}% 1Y`);
+
+    // ── MOMENTUM BONUS — stocks up ≥10% last month get a conviction boost ────
+    if (perf.r1m >= 0.10) {
+        score += 8;
+        signals.push(`🚀 Momentum: +${(perf.r1m * 100).toFixed(1)}% last month`);
+    }
 
     // ── ANALYST (0-25) ───────────────────────────────────────────────────────
     if      (analyst.recMean <= 1.5) { score += 15; signals.push("⭐ Strong Buy consensus"); }
