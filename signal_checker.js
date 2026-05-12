@@ -34,7 +34,7 @@ const { writeDashboard, writeDashboardMulti } = require("./dashboard_writer");
 const NTFY_TOPIC    = process.env.NTFY_TOPIC    || "ndx-signals-kinsha";
 const NTFY_SERVER   = process.env.NTFY_SERVER   || "https://ntfy.sh";
 const NTFY_TOKEN    = process.env.NTFY_TOKEN    || "";
-const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || "5", 10);   // minutes
+const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || "15", 10);  // minutes
 const INTERVAL      = "30m";
 const RANGE         = "60d";
 
@@ -65,6 +65,11 @@ const SWEEP_LB  = 50;
 const lastSignal     = {};   // e.g. { NDX: "STRONG_BUY", SPX: null }
 const lastSignalSide = {};   // e.g. { NDX: "BUY", SPX: "SELL" } — for flip detection
 const lastFlipTime   = {};   // e.g. { NDX: 1715000000000 }   — cooldown tracking
+
+// Signal persistence gate — only alert after the same signal fires N consecutive runs.
+// At 15-min polling, 4 runs = 1 hour of confirmed signal before alerting.
+const SIGNAL_CONFIRM_RUNS = 4;
+const signalRunCount = {};   // e.g. { "NDX:STRONG_BUY": 3, "SPX:SMC_BULL_SETUP": 1 }
 
 // AI sector sentiment tracking — push when sector label changes
 let lastAISectorSentiment = null;  // e.g. "Bullish", "Bearish", "Neutral", …
@@ -911,28 +916,57 @@ async function check() {
                 sig.structure?.displacement ? `Disp-${sig.structure.displacementDir}` : "",
             ].filter(Boolean).join(" | ") || "No SMC trigger";
 
+            // ── SIGNAL PERSISTENCE GATE ───────────────────────────────────────
+            // Determine the candidate signal key for this run
+            let candidateKey = null;
             if (action) {
-                console.log(`\n  *** [${sym}] ${action} SIGNAL ***`);
-                if (action === lastSignal[sym]) {
-                    console.log(`  [SKIP] Same signal as last bar`);
+                candidateKey = `${sym}:${action}`;
+            } else if (prediction.confidence >= 70 && prediction.bias !== "NEUTRAL") {
+                candidateKey = `${sym}:SMC_${prediction.bias}_SETUP`;
+            }
+
+            if (candidateKey) {
+                // Same signal as last run — increment counter
+                if (signalRunCount[sym]?.key === candidateKey) {
+                    signalRunCount[sym].count++;
                 } else {
-                    const payload = buildPushPayload(sym, action, classic, smcSummary, prediction, news, opts, spread, aiRec);
-                    await sendPush(payload);
-                    lastSignal[sym] = action;
+                    // Different signal — reset counter
+                    signalRunCount[sym] = { key: candidateKey, count: 1 };
+                }
+
+                const runCount = signalRunCount[sym].count;
+                const label    = action || `SMC_${prediction.bias}_SETUP`;
+                console.log(`\n  [${sym}] ${label} — run ${runCount}/${SIGNAL_CONFIRM_RUNS} confirmed`);
+
+                if (runCount === SIGNAL_CONFIRM_RUNS) {
+                    // Reached 4 consecutive runs — fire alert once
+                    console.log(`\n  *** [${sym}] ${label} CONFIRMED after ${SIGNAL_CONFIRM_RUNS} runs — ALERTING ***`);
+                    if (action) {
+                        const payload = buildPushPayload(sym, action, classic, smcSummary, prediction, news, opts, spread, aiRec);
+                        payload.title = `✅ ${payload.title} (${SIGNAL_CONFIRM_RUNS}-run confirmed)`;
+                        await sendPush(payload);
+                        lastSignal[sym] = action;
+                    } else {
+                        const biasAction = `SMC_${prediction.bias}_SETUP`;
+                        const payload = buildPushPayload(sym, biasAction, classic, smcSummary, prediction, news, opts, spread, aiRec);
+                        payload.priority = 4;
+                        payload.title    = `🔮 ${sym} ${prediction.bias} SETUP ${prediction.confidence}% (${SIGNAL_CONFIRM_RUNS}-run confirmed)${aiRec ? ` | AI: ${aiRec.action}` : ""}`;
+                        await sendPush(payload);
+                    }
+                    // Reset so it doesn't re-fire on the 5th run — needs to drop & re-confirm
+                    signalRunCount[sym].count = 0;
+                } else if (runCount > SIGNAL_CONFIRM_RUNS) {
+                    // Already fired — stay silent until signal resets
+                    console.log(`  [${sym}] Already alerted — waiting for signal to reset`);
                 }
             } else {
-                console.log(`\n  [${sym}] No strong classic signal`);
-                if (prediction.confidence >= 70 && prediction.bias !== "NEUTRAL") {
-                    const biasAction = prediction.bias === "BULL" ? "SMC_BULL_SETUP" : "SMC_BEAR_SETUP";
-                    console.log(`  [${sym}] SMC opportunity: ${biasAction} (${prediction.confidence}%)`);
-                    const payload = buildPushPayload(sym, biasAction, classic, smcSummary, prediction, news, opts, spread, aiRec);
-                    payload.priority = 4;
-                    payload.title    = `🔮 ${sym} ${prediction.bias} SETUP ${prediction.confidence}%${aiRec ? ` | AI: ${aiRec.action}` : ""}`;
-                    await sendPush(payload);
-                } else {
-                    console.log(`  [${sym}] Bias: ${prediction.bias} @ ${prediction.confidence}% (threshold: 70%)`);
-                    lastSignal[sym] = null;
+                // No signal this run — reset the counter
+                if (signalRunCount[sym]?.count > 0) {
+                    console.log(`  [${sym}] Signal dropped — resetting run counter (was: ${signalRunCount[sym]?.key})`);
                 }
+                signalRunCount[sym] = { key: null, count: 0 };
+                console.log(`\n  [${sym}] No strong signal | Bias: ${prediction.bias} @ ${prediction.confidence}%`);
+                lastSignal[sym] = null;
             }
         }
 
