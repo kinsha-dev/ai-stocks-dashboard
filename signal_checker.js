@@ -67,7 +67,7 @@ const lastSignalSide = {};   // e.g. { NDX: "BUY", SPX: "SELL" } — for flip de
 const lastFlipTime   = {};   // e.g. { NDX: 1715000000000 }   — cooldown tracking
 
 // Flip confirmation thresholds
-const FLIP_COOLDOWN_MS  = 15 * 60 * 1000;  // 15 min between flip alerts per symbol
+const FLIP_COOLDOWN_MS  = 30 * 60 * 1000;  // 30 min between flip alerts per symbol
 const FLIP_MIN_SCORE    = 3;                // min confirmation score for classic/SMC flips
 const FLIP_AI_MIN_SCORE = 4;                // higher bar when AI is the only trigger
 
@@ -519,15 +519,20 @@ function computeClassicSignals(data) {
     const volOk        = volume[i] > volSma[i] * VOL_MULT;
     const emaCrossUp   = crossover(ema9, ema21, i);
     const emaCrossDown = crossunder(ema9, ema21, i);
+    // Recent cross: did EMA9 cross EMA21 within the last 3 bars? (more forgiving than same-bar only)
+    const recentCrossUp   = i >= 3 && [i, i-1, i-2].some(j => crossover(ema9,  ema21, j));
+    const recentCrossDown = i >= 3 && [i, i-1, i-2].some(j => crossunder(ema9, ema21, j));
+    // Alignment: EMA9 position relative to EMA21 (persistent trend direction)
+    const ema9AboveEma21 = ema9[i] > ema21[i];
     const macdCrossUp  = crossover(macdLine, sigLine, i);
     const macdCrossDown= crossunder(macdLine, sigLine, i);
-    const bullScore    = (ema9[i] > ema21[i] ? 1 : 0) + (macdBull ? 1 : 0) + (rsiBull ? 1 : 0);
-    const bearScore    = (ema9[i] < ema21[i] ? 1 : 0) + (macdBear ? 1 : 0) + (rsiVal < 50 ? 1 : 0);
+    const bullScore    = (ema9AboveEma21 ? 1 : 0) + (macdBull ? 1 : 0) + (rsiBull ? 1 : 0);
+    const bearScore    = (!ema9AboveEma21 ? 1 : 0) + (macdBear ? 1 : 0) + (rsiVal < 50 ? 1 : 0);
     const longSignal   = emaCrossUp   && bullTrend && rsiBull && macdCrossUp   && volOk;
     const shortSignal  = emaCrossDown && bearTrend && rsiBear && macdCrossDown && volOk;
     const strongBuy    = longSignal  && bullScore >= 3;
     const strongSell   = shortSignal && bearScore >= 3;
-    return { price: close[i], rsi: rsiVal, bullScore, bearScore, longSignal, shortSignal, strongBuy, strongSell, bullTrend, bearTrend, rsiBull, rsiBear, emaCrossUp, emaCrossDown, macdCrossUp, macdCrossDown, ema9: ema9[i], ema21: ema21[i], ema200: ema200[i], macd: macdLine[i] };
+    return { price: close[i], rsi: rsiVal, bullScore, bearScore, longSignal, shortSignal, strongBuy, strongSell, bullTrend, bearTrend, rsiBull, rsiBear, emaCrossUp, emaCrossDown, recentCrossUp, recentCrossDown, ema9AboveEma21, macdCrossUp, macdCrossDown, ema9: ema9[i], ema21: ema21[i], ema200: ema200[i], macd: macdLine[i] };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -586,9 +591,16 @@ function scoreTrendReversal(newSide, classic, prediction, structure, aiRec) {
     if (isBuy  && classic.bullTrend) { score++; reasons.push("EMA200:bull"); }
     if (!isBuy && classic.bearTrend) { score++; reasons.push("EMA200:bear"); }
 
-    // EMA 9/21 crossover on this bar (+1) — freshest momentum signal
-    if (isBuy  && classic.emaCrossUp)   { score++; reasons.push("EMACross:up"); }
-    if (!isBuy && classic.emaCrossDown) { score++; reasons.push("EMACross:down"); }
+    // EMA 9/21 — split into two sub-scores (max +2 combined):
+    //   Alignment (+1): EMA9 position vs EMA21 — persistent while trend holds
+    //   Fresh cross (+1): EMA9 crossed EMA21 within last 3 bars — momentum just shifted
+    if (isBuy) {
+        if (classic.ema9AboveEma21) { score++; reasons.push("EMA9>EMA21"); }
+        if (classic.recentCrossUp)  { score++; reasons.push("EMACross:up(≤3bars)"); }
+    } else {
+        if (!classic.ema9AboveEma21) { score++; reasons.push("EMA9<EMA21"); }
+        if (classic.recentCrossDown) { score++; reasons.push("EMACross:dn(≤3bars)"); }
+    }
 
     // Classic indicator score alignment (+1)
     if (isBuy  && classic.bullScore >= 2) { score++; reasons.push(`ClScore:${classic.bullScore}/3`); }
