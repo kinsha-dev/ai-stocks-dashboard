@@ -21,6 +21,10 @@
 "use strict";
 
 const https = require("https");
+const fs    = require("fs");
+const path  = require("path");
+
+const HISTORY_FILE = path.join(__dirname, "signals_history.json");
 
 // ── NEW MODULES ───────────────────────────────────────────────────────────────
 const { analyzeOptions, analyzeOptionsFor } = require("./options_checker");
@@ -66,10 +70,14 @@ const lastSignal     = {};   // e.g. { NDX: "STRONG_BUY", SPX: null }
 const lastSignalSide = {};   // e.g. { NDX: "BUY", SPX: "SELL" } — for flip detection
 const lastFlipTime   = {};   // e.g. { NDX: 1715000000000 }   — cooldown tracking
 
-// Signal persistence gate — only alert after the same signal fires N consecutive runs.
-// At 15-min polling, 4 runs = 1 hour of confirmed signal before alerting.
-const SIGNAL_CONFIRM_RUNS = 4;
-const signalRunCount = {};   // e.g. { "NDX:STRONG_BUY": 3, "SPX:SMC_BULL_SETUP": 1 }
+// History-based signal confirmation.
+// Each run, score the last HIST_LOOKBACK snapshots from signals_history.json.
+// If ≥ HIST_MIN_VOTES of those runs agree on a direction (using all contributing
+// factors), fire one alert — no more waiting for future runs to pile up.
+const HIST_LOOKBACK   = 4;   // look back this many stored snapshots
+const HIST_MIN_VOTES  = 3;   // require this many agreeing direction votes
+const lastHistAlertSide = {}; // { NDX: "BUY"|"SELL" }
+const lastHistAlertTime = {}; // { NDX: timestamp } — cooldown re-uses FLIP_COOLDOWN_MS
 
 // AI sector sentiment tracking — push when sector label changes
 let lastAISectorSentiment = null;  // e.g. "Bullish", "Bearish", "Neutral", …
@@ -652,6 +660,183 @@ function scoreTrendReversal(newSide, classic, prediction, structure, aiRec) {
     return { score, reasons };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 6.5 — HISTORY-BASED SIGNAL CONFIRMATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Score one stored snapshot for bull/bear direction using every available
+ * contributing factor.  Returns +1 (bull), -1 (bear), or 0 (neutral/mixed).
+ *
+ * Weights chosen so a single strong-conviction factor (CHoCH, AI+options)
+ * can dominate, but mixed signals stay neutral.
+ */
+function scoreSnapshotDirection(snap) {
+    const c  = snap.classic    || {};
+    const p  = snap.prediction || {};
+    const s  = snap.smc        || {};
+    const ai = snap.ai         || {};
+    let bull = 0, bear = 0;
+
+    // EMA 200 macro trend (+2) — biggest single technical factor
+    if (c.bullTrend === true)  bull += 2;
+    else if (c.bullTrend === false) bear += 2;
+
+    // EMA9 vs EMA21 alignment (+1) — short-term momentum direction
+    if (c.ema9 != null && c.ema21 != null) {
+        if (c.ema9 > c.ema21) bull += 1;
+        else                   bear += 1;
+    }
+
+    // Classic indicator score (+1)
+    if ((c.bullScore || 0) >= 2) bull += 1;
+    if ((c.bearScore || 0) >= 2) bear += 1;
+
+    // Prediction bias (+1) — composite of all sub-signals
+    if (p.bias === "BULL") bull += 1;
+    if (p.bias === "BEAR") bear += 1;
+
+    // AI advisor (+3) — integrates options flow, news, and all indicators
+    if (ai.action === "BUY")  bull += 3;
+    if (ai.action === "SELL") bear += 3;
+
+    // CHoCH (+3) — highest-weight order flow event (structural reversal)
+    if (s.choch === "BULLISH") bull += 3;
+    if (s.choch === "BEARISH") bear += 3;
+
+    // BOS (+2) — trend continuation confirmation
+    if (s.bos === "BULLISH") bull += 2;
+    if (s.bos === "BEARISH") bear += 2;
+
+    // Market structure (+1)
+    if (s.mktStructure === "BULLISH") bull += 1;
+    if (s.mktStructure === "BEARISH") bear += 1;
+
+    // Displacement (+1) — institutional imbalance
+    if (s.displacement && s.dispDir === "BULL") bull += 1;
+    if (s.displacement && s.dispDir === "BEAR") bear += 1;
+
+    // Premium / Discount zone (+1)
+    if (s.premiumDiscount === "DISCOUNT") bull += 1;
+    if (s.premiumDiscount === "PREMIUM")  bear += 1;
+
+    // Volume directional delta (+1)
+    if (s.deltaProxy > 0.5  && (s.volRatio || 0) > 1.5) bull += 1;
+    if (s.deltaProxy < -0.5 && (s.volRatio || 0) > 1.5) bear += 1;
+
+    // Threshold: net ≥ 3 = clear directional conviction
+    const net = bull - bear;
+    if (net >= 3)  return { vote: 1,  bull, bear, net };
+    if (net <= -3) return { vote: -1, bull, bear, net };
+    return              { vote: 0,  bull, bear, net };
+}
+
+/**
+ * Load the last HIST_LOOKBACK snapshots from history, score each one,
+ * and fire a push alert if ≥ HIST_MIN_VOTES agree on one direction.
+ *
+ * Also scores the current (not-yet-written) run so we have 5 data points
+ * but require the current run to also agree before alerting.
+ *
+ * Respects FLIP_COOLDOWN_MS to avoid re-alerting the same direction repeatedly.
+ */
+async function checkHistoryAlert(sym, currentSig, aiRec, news, opts, spread) {
+    // ── 1. Load history ───────────────────────────────────────────────────────
+    let snapshots = [];
+    try {
+        const raw = JSON.parse(fs.readFileSync(HISTORY_FILE, "utf8"));
+        snapshots = raw[sym]?.snapshots || [];
+    } catch (e) {
+        console.warn(`  [${sym}] History read failed: ${e.message}`);
+        return;
+    }
+    if (snapshots.length < HIST_LOOKBACK) return;  // not enough history yet
+
+    // ── 2. Score last HIST_LOOKBACK historical snapshots ─────────────────────
+    const recent = snapshots.slice(-HIST_LOOKBACK);
+    const votes  = recent.map(scoreSnapshotDirection);
+
+    const bullVotes = votes.filter(v => v.vote === 1).length;
+    const bearVotes = votes.filter(v => v.vote === -1).length;
+
+    // ── 3. Score the CURRENT run (live, not yet written to history) ───────────
+    const curSnap = {
+        classic: {
+            bullTrend: currentSig.classic.bullTrend,
+            ema9:      currentSig.classic.ema9,
+            ema21:     currentSig.classic.ema21,
+            bullScore: currentSig.classic.bullScore,
+            bearScore: currentSig.classic.bearScore,
+        },
+        prediction: { bias: currentSig.prediction.bias },
+        smc: {
+            choch:           currentSig.structure?.choch?.type   || null,
+            bos:             currentSig.structure?.bos?.type     || null,
+            mktStructure:    currentSig.structure?.structure     || null,
+            displacement:    currentSig.structure?.displacement  || false,
+            dispDir:         currentSig.structure?.displacementDir || null,
+            premiumDiscount: currentSig.structure?.premiumDiscount || null,
+            deltaProxy:      currentSig.vol?.deltaProxy          ?? 0,
+            volRatio:        currentSig.vol?.volRatio            ?? 1,
+        },
+        ai: aiRec ? { action: aiRec.action } : {},
+    };
+    const curResult = scoreSnapshotDirection(curSnap);
+    const curVote   = curResult.vote;
+
+    // Log the vote breakdown for this run
+    const histVoteStr = votes.map(v => v.vote === 1 ? "↑" : v.vote === -1 ? "↓" : "~").join(" ");
+    console.log(`  [${sym}] History votes: [${histVoteStr}] cur:${curVote >= 1 ? "↑" : curVote <= -1 ? "↓" : "~"}  bull:${bullVotes} bear:${bearVotes}/${HIST_LOOKBACK}`);
+
+    // ── 4. Determine confirmed direction ──────────────────────────────────────
+    let confirmedSide = null;
+    if (bullVotes >= HIST_MIN_VOTES && curVote >= 1)  confirmedSide = "BUY";
+    if (bearVotes >= HIST_MIN_VOTES && curVote <= -1) confirmedSide = "SELL";
+    if (!confirmedSide) return;
+
+    // ── 5. Cooldown — same direction alerted recently? ────────────────────────
+    const now        = Date.now();
+    const cooldownOk = !lastHistAlertTime[sym] || (now - lastHistAlertTime[sym]) >= FLIP_COOLDOWN_MS;
+    const sameDir    = lastHistAlertSide[sym] === confirmedSide;
+    if (sameDir && !cooldownOk) {
+        const minLeft = Math.round((FLIP_COOLDOWN_MS - (now - lastHistAlertTime[sym])) / 60_000);
+        console.log(`  [${sym}] History alert suppressed — same direction (${confirmedSide}), cooldown ${minLeft}min`);
+        return;
+    }
+
+    // ── 6. Build contributing-factor summary ──────────────────────────────────
+    const { classic, prediction, structure, vol } = currentSig;
+    const factors = [];
+    if (curVote === 1 && classic.bullTrend)  factors.push("Above EMA200");
+    if (curVote === -1 && !classic.bullTrend) factors.push("Below EMA200");
+    if (classic.ema9 > classic.ema21)  factors.push("EMA9>EMA21");
+    else                                factors.push("EMA9<EMA21");
+    if (aiRec?.action)     factors.push(`AI:${aiRec.action}(${aiRec.conviction})`);
+    if (structure?.choch)  factors.push(`CHoCH ${structure.choch.type} @$${structure.choch.level}`);
+    if (structure?.bos)    factors.push(`BOS ${structure.bos.type} @$${structure.bos.level}`);
+    if (structure?.structure !== "RANGING" && structure?.structure) factors.push(`Struct:${structure.structure}`);
+    if (structure?.displacement) factors.push(`Disp:${structure.displacementDir}`);
+    if (structure?.premiumDiscount) factors.push(structure.premiumDiscount === "DISCOUNT" ? "In DISCOUNT zone" : "In PREMIUM zone");
+    if (prediction.confidence >= 50) factors.push(`Bias:${prediction.bias}@${prediction.confidence}%`);
+
+    const emoji      = confirmedSide === "BUY" ? "📈" : "📉";
+    const isSameDir  = lastHistAlertSide[sym] === confirmedSide;   // re-confirm after cooldown
+    const titleTag   = isSameDir ? " (RE-CONFIRM)" : ` (${HIST_LOOKBACK}-run history)`;
+
+    console.log(`\n  *** [${sym}] HISTORY CONFIRMED ${confirmedSide}${titleTag} ***`);
+    console.log(`  Factors: ${factors.join(" · ")}`);
+
+    await sendPush({
+        title:    `${emoji} ${sym} ${confirmedSide}${titleTag}`,
+        message:  `$${classic.price.toFixed(2)} | RSI ${classic.rsi.toFixed(1)} | Bias ${prediction.bias} ${prediction.confidence}%\n${HIST_LOOKBACK} runs checked: ${bullVotes} bull ↑  ${bearVotes} bear ↓\nFactors: ${factors.join(" · ")}\n${aiRec ? `AI: ${aiRec.action} (${aiRec.conviction})` : ""}`,
+        priority: confirmedSide === "BUY" ? 4 : 4,
+        tags:     [confirmedSide === "BUY" ? "chart_increasing" : "chart_decreasing"],
+    });
+
+    lastHistAlertSide[sym] = confirmedSide;
+    lastHistAlertTime[sym] = now;
+}
+
 function buildFlipPayload(sym, prevSide, newSide, classic, prediction, aiRec, source = "SIGNAL", score = 0, reasons = []) {
     const arrow  = `${prevSide} → ${newSide}`;
     const emoji  = newSide === "BUY" ? "📈" : "📉";
@@ -916,56 +1101,21 @@ async function check() {
                 sig.structure?.displacement ? `Disp-${sig.structure.displacementDir}` : "",
             ].filter(Boolean).join(" | ") || "No SMC trigger";
 
-            // ── SIGNAL PERSISTENCE GATE ───────────────────────────────────────
-            // Determine the candidate signal key for this run
-            let candidateKey = null;
-            if (action) {
-                candidateKey = `${sym}:${action}`;
-            } else if (prediction.confidence >= 70 && prediction.bias !== "NEUTRAL") {
-                candidateKey = `${sym}:SMC_${prediction.bias}_SETUP`;
-            }
+            // ── HISTORY-BASED SIGNAL CONFIRMATION ────────────────────────────
+            // Check last 4 snapshots from history. If ≥3 votes agree on a
+            // direction AND the current run confirms it, fire an alert now.
+            // This catches signals that appeared in recent runs without needing
+            // to wait for more future identical runs (nothing gets missed).
+            await checkHistoryAlert(sym, sig, aiRec, news, opts, spread);
 
-            if (candidateKey) {
-                // Same signal as last run — increment counter
-                if (signalRunCount[sym]?.key === candidateKey) {
-                    signalRunCount[sym].count++;
-                } else {
-                    // Different signal — reset counter
-                    signalRunCount[sym] = { key: candidateKey, count: 1 };
-                }
-
-                const runCount = signalRunCount[sym].count;
-                const label    = action || `SMC_${prediction.bias}_SETUP`;
-                console.log(`\n  [${sym}] ${label} — run ${runCount}/${SIGNAL_CONFIRM_RUNS} confirmed`);
-
-                if (runCount === SIGNAL_CONFIRM_RUNS) {
-                    // Reached 4 consecutive runs — fire alert once
-                    console.log(`\n  *** [${sym}] ${label} CONFIRMED after ${SIGNAL_CONFIRM_RUNS} runs — ALERTING ***`);
-                    if (action) {
-                        const payload = buildPushPayload(sym, action, classic, smcSummary, prediction, news, opts, spread, aiRec);
-                        payload.title = `✅ ${payload.title} (${SIGNAL_CONFIRM_RUNS}-run confirmed)`;
-                        await sendPush(payload);
-                        lastSignal[sym] = action;
-                    } else {
-                        const biasAction = `SMC_${prediction.bias}_SETUP`;
-                        const payload = buildPushPayload(sym, biasAction, classic, smcSummary, prediction, news, opts, spread, aiRec);
-                        payload.priority = 4;
-                        payload.title    = `🔮 ${sym} ${prediction.bias} SETUP ${prediction.confidence}% (${SIGNAL_CONFIRM_RUNS}-run confirmed)${aiRec ? ` | AI: ${aiRec.action}` : ""}`;
-                        await sendPush(payload);
-                    }
-                    // Reset so it doesn't re-fire on the 5th run — needs to drop & re-confirm
-                    signalRunCount[sym].count = 0;
-                } else if (runCount > SIGNAL_CONFIRM_RUNS) {
-                    // Already fired — stay silent until signal resets
-                    console.log(`  [${sym}] Already alerted — waiting for signal to reset`);
-                }
-            } else {
-                // No signal this run — reset the counter
-                if (signalRunCount[sym]?.count > 0) {
-                    console.log(`  [${sym}] Signal dropped — resetting run counter (was: ${signalRunCount[sym]?.key})`);
-                }
-                signalRunCount[sym] = { key: null, count: 0 };
-                console.log(`\n  [${sym}] No strong signal | Bias: ${prediction.bias} @ ${prediction.confidence}%`);
+            // Also still fire immediately on a classic STRONG signal (rare)
+            if (action && action !== lastSignal[sym]) {
+                console.log(`\n  *** [${sym}] CLASSIC ${action} — alerting immediately ***`);
+                const payload = buildPushPayload(sym, action, classic, smcSummary, prediction, news, opts, spread, aiRec);
+                await sendPush(payload);
+                lastSignal[sym] = action;
+            } else if (!action) {
+                console.log(`\n  [${sym}] No classic signal | Bias: ${prediction.bias} @ ${prediction.confidence}%`);
                 lastSignal[sym] = null;
             }
         }
