@@ -31,7 +31,7 @@ const { spawnSync } = require("child_process");
 
 const RISK_GUARDS = {
     MIN_PRICE:        5,       // Penny stock floor — below this = too risky/illiquid
-    MAX_WEEKLY_LOSS: -0.05,    // -5% in one week = distribution signal, wait it out
+    MAX_WEEKLY_LOSS: -0.15,    // -15% in one week = hard distribution signal, wait it out
     MIN_MARKET_CAP_B: 0.30,   // $300M minimum — ensures institutional participation
     MIN_AVG_VOLUME:   300_000, // 300K shares/day — needed to exit cleanly
 };
@@ -112,6 +112,12 @@ function applyRiskGuards(analysis) {
     const volRatio = analysis.tech?.volRatio ?? 1;
     if (volRatio < 0.05) {
         return `volume ratio ${volRatio.toFixed(2)}x — effectively illiquid`;
+    }
+
+    // Monthly momentum gate — must have at least one month with +25% gain.
+    // Filters to high-momentum names only; removes slow-movers from the pool.
+    if ((perf.r1m ?? 0) < 0.25) {
+        return `1M return ${fmtPct(perf.r1m)} < +25% monthly momentum required`;
     }
 
     return null; // ✅ passes all guards
