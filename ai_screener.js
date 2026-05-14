@@ -196,6 +196,11 @@ const AI_STOCKS = [
     { ticker: "OPEN",  name: "Opendoor Technologies",  sector: "AI Real Estate" },
     { ticker: "DOMO",  name: "Domo Inc",               sector: "AI Business Intel" },
     { ticker: "VERX",  name: "Vertex Inc",             sector: "AI Tax Software" },
+
+    // ── User additions ────────────────────────────────────────────────────────
+    { ticker: "NBIS",  name: "Nebius Group",           sector: "AI Cloud Infra" },
+    { ticker: "BE",    name: "Bloom Energy",           sector: "AI Energy" },
+    { ticker: "TSEM",  name: "Tower Semiconductor",    sector: "AI Chips" },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
