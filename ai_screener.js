@@ -197,10 +197,19 @@ const AI_STOCKS = [
     { ticker: "DOMO",  name: "Domo Inc",               sector: "AI Business Intel" },
     { ticker: "VERX",  name: "Vertex Inc",             sector: "AI Tax Software" },
 
-    // ── User additions ────────────────────────────────────────────────────────
+    // ── User watchlist additions ──────────────────────────────────────────────
     { ticker: "NBIS",  name: "Nebius Group",           sector: "AI Cloud Infra" },
     { ticker: "BE",    name: "Bloom Energy",           sector: "AI Energy" },
     { ticker: "TSEM",  name: "Tower Semiconductor",    sector: "AI Chips" },
+    { ticker: "RXT",   name: "Rackspace Technology",   sector: "AI Cloud Managed" },
+    { ticker: "INOD",  name: "Innodata Inc",           sector: "AI Data Services" },
+    { ticker: "MXL",   name: "MaxLinear",              sector: "AI Connectivity" },
+    { ticker: "BAND",  name: "Bandwidth Inc",          sector: "AI Communications" },
+    { ticker: "BLZE",  name: "Backblaze",              sector: "AI Cloud Storage" },
+    { ticker: "AGL",   name: "agilon health",          sector: "AI Healthcare" },
+    { ticker: "AMBQ",  name: "Ambient AI",             sector: "AI Security" },
+    { ticker: "EVC",   name: "Entravision Comms",      sector: "AI AdTech" },
+    { ticker: "REPL",  name: "Replimune Group",        sector: "AI Drug Discovery" },
 
     // ── HBM (High Bandwidth Memory) Ecosystem ────────────────────────────────
     { ticker: "MU",    name: "Micron Technology",      sector: "HBM Memory" },

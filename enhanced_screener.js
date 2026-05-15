@@ -497,7 +497,24 @@ async function run(opts = {}) {
         process.exit(1);
     }
 
-    console.log(`  📋  Universe: ${AI_STOCKS.length} stocks (small/mid cap AI only)\n`);
+    // 1b. Merge hot stocks from news (written by ai_etf_monitor each poll cycle)
+    const HOT_FILE = path.join(__dirname, "hot_stocks.json");
+    try {
+        const hotData = JSON.parse(fs.readFileSync(HOT_FILE, "utf8"));
+        const existingTickers = new Set(AI_STOCKS.map(s => s.ticker));
+        const added = [];
+        for (const h of (hotData.hot || [])) {
+            if (!existingTickers.has(h.ticker)) {
+                AI_STOCKS.push({ ticker: h.ticker, name: h.ticker, sector: "📰 News Pick", hotMention: true, mentionScore: h.score });
+                added.push(`${h.ticker}(+${h.score})`);
+            }
+        }
+        if (added.length) console.log(`  🔥  Hot from news (+${added.length}): ${added.join(" ")}`);
+        const age = hotData.updatedAt ? Math.round((Date.now() - new Date(hotData.updatedAt)) / 60_000) : "?";
+        console.log(`  📰  Hot stocks file age: ${age} min\n`);
+    } catch (_) { /* hot_stocks.json not yet written — skip silently */ }
+
+    console.log(`  📋  Universe: ${AI_STOCKS.length} stocks (AI + news picks)\n`);
 
     // 2. Fetch all data
     const tickers = AI_STOCKS.map(s => s.ticker);

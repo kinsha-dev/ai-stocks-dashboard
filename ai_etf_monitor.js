@@ -22,6 +22,42 @@ const path  = require("path");
 
 const AI_ETF_FILE    = path.join(__dirname, "ai_etf_data.json");
 const SCREENER_FILE  = path.join(__dirname, "screener_results.json");
+const HOT_STOCKS_FILE = path.join(__dirname, "hot_stocks.json");
+
+// ── HOT STOCK TICKER WATCHLIST ────────────────────────────────────────────────
+// Broad set of AI/tech tickers scanned for in news headlines.
+// Includes screener universe + large caps we watch but don't screen.
+const TICKER_WATCHLIST = new Set([
+    // Large-cap AI names (excluded from screener but tracked in news)
+    "NVDA","AMD","MSFT","GOOGL","GOOG","META","AMZN","AAPL","TSLA","AVGO",
+    "ARM","QCOM","TSM","INTC","ASML","AMAT","LRCX","KLAC","DELL","ANET",
+    "PLTR","CRM","NOW","ORCL","IBM","ADBE","CDNS","SNPS","CRWD","PANW",
+    // HBM / Memory
+    "MU","WDC","RMBS","AMKR","ENTG","CAMT","ICHR","AZTA",
+    // AI Infra / Cloud
+    "SMCI","APLD","VRT","CRDO","IREN","CORZ","WULF","NBIS","RXT","DBRG",
+    "VNET","GDS","UNIT","PSTG","NTNX","HPE","ALAB","MPWR","WOLF","AEHR",
+    // Semiconductors
+    "LSCC","AMBA","CEVA","ACLS","ONTO","NVTS","ALGM","SITM","MXL","TSEM",
+    "COHU","FORM","MKSI","ACMR","KLIC","IPGP","HIMX","SWKS",
+    // Networking / Optical / Fiber
+    "NET","FSLY","INFN","VIAV","CALX","CIEN","GLW","NTAP","COHR","LITE",
+    "AAOI","CLFD","BAND",
+    // AI Software / Data
+    "SOUN","AI","BBAI","UPST","IONQ","RGTI","QBTS",
+    "SNOW","DDOG","MDB","CFLT","ESTC","DT","DOCN","PATH","GTLB",
+    "MNDY","ASAN","BRZE","HUBS","ZI","PEGA","TOST",
+    // AI Security
+    "S","ZS","OKTA","TENB","VRNS","CYBR","QLYS","RBRK",
+    // AI Healthcare
+    "RXRX","SDGR","NTRA","DOCS","VEEV","AGL","REPL","INOD",
+    // AI Energy
+    "STEM","OKLO","VST","CEG","GEV","TLN","NRG","ENPH","FSLR","BE",
+    "HASI","ARRY","AMRC",
+    // AI FinTech / Other
+    "AFRM","SOFI","HOOD","UPST","BLZE","EVC","AMBQ","RBLX","U","DUOL",
+]);
+
 
 const AI_ETFS = [
     { ticker: "BOTZ", name: "Global X Robotics & AI",    theme: "AI/Robotics"    },
@@ -262,6 +298,56 @@ function sectorSentiment(etfs) {
              bullCount, bearCount, bullTrend, total: valid.length };
 }
 
+// ── HOT STOCK SCANNER ─────────────────────────────────────────────────────────
+
+/**
+ * Scans all AI news article titles for ticker mentions.
+ * A stock is "hot" if it appears in ≥2 articles with a net positive score.
+ * Results saved to hot_stocks.json so the screener picks them up next run.
+ *
+ * @param {Array} articles - from fetchAIThemeNews()
+ * @returns {Array<{ticker, mentions, score, headlines}>}
+ */
+function scanHotStocks(articles) {
+    const mentions = {};   // ticker → { count, score, headlines[] }
+
+    for (const art of articles) {
+        const title = (art.title || "").toUpperCase();
+        const artScore = art.score ?? scoreTitle(art.title);
+
+        for (const ticker of TICKER_WATCHLIST) {
+            // Whole-word match — avoids "AI" matching "PAID" etc.
+            const re = new RegExp(`(?<![A-Z])${ticker}(?![A-Z])`);
+            if (!re.test(title)) continue;
+
+            if (!mentions[ticker]) mentions[ticker] = { count: 0, score: 0, headlines: [] };
+            mentions[ticker].count++;
+            mentions[ticker].score += artScore;
+            if (mentions[ticker].headlines.length < 3)
+                mentions[ticker].headlines.push({ title: art.title, score: artScore });
+        }
+    }
+
+    // Hot = mentioned ≥2 times with net positive sentiment
+    const hot = Object.entries(mentions)
+        .filter(([, v]) => v.count >= 2 && v.score > 0)
+        .map(([ticker, v]) => ({ ticker, mentions: v.count, score: v.score, headlines: v.headlines }))
+        .sort((a, b) => b.score - a.score || b.mentions - a.mentions);
+
+    try {
+        fs.writeFileSync(HOT_STOCKS_FILE, JSON.stringify({
+            updatedAt: new Date().toISOString(),
+            hot,
+        }, null, 2), "utf8");
+        if (hot.length)
+            console.log(`  [HOT] ${hot.length} tickers in news: ${hot.slice(0, 8).map(h => `${h.ticker}(${h.score > 0 ? "+" : ""}${h.score})`).join(" ")}`);
+    } catch (e) {
+        console.warn(`  [HOT] Write failed: ${e.message}`);
+    }
+
+    return hot;
+}
+
 // ── MAIN EXPORT ───────────────────────────────────────────────────────────────
 
 async function fetchAIETFData() {
@@ -296,6 +382,9 @@ async function fetchAIETFData() {
         .sort((a, b) => a.date.localeCompare(b.date))
         .slice(0, 14);
 
+    // Scan all AI news for hot ticker mentions → writes hot_stocks.json
+    const hotStocks = scanHotStocks(aiNews);
+
     const data = {
         timestamp: new Date().toISOString(),
         etfs,
@@ -303,11 +392,12 @@ async function fetchAIETFData() {
         sentiment:    sectorSentiment(etfs),
         aiNews,
         topPicksNews,
+        hotStocks,
     };
 
     try {
         fs.writeFileSync(AI_ETF_FILE, JSON.stringify(data, null, 2), "utf8");
-        console.log(`  [ETF] ${etfs.length} ETFs | ${earnings.length} earnings | ${aiNews.length} AI news | ${topPicksNews.length} picks with news`);
+        console.log(`  [ETF] ${etfs.length} ETFs | ${earnings.length} earnings | ${aiNews.length} AI news | ${topPicksNews.length} picks | ${hotStocks.length} hot tickers`);
     } catch (e) {
         console.warn(`  [ETF] Write failed: ${e.message}`);
     }

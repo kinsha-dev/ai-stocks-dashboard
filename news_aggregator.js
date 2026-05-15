@@ -51,9 +51,30 @@ const NEWS_SOURCES = [
         host: "www.cnbc.com",
         path: "/id/20910258/device/rss/rss.html",
     },
+    // ── General AI news ──────────────────────────────────────────────────────
+    {
+        name: "Nasdaq Tech",
+        host: "www.nasdaq.com",
+        path: "/feed/rssoutbound?category=Technology",
+    },
+    {
+        name: "Benzinga",
+        host: "www.benzinga.com",
+        path: "/feed/",
+    },
+    {
+        name: "InvestorPlace",
+        host: "investorplace.com",
+        path: "/feed/",
+    },
+    {
+        name: "TheStreet AI",
+        host: "www.thestreet.com",
+        path: "/rss/latest.xml",
+    },
 ];
 
-const MAX_PER_SOURCE = 5;   // 5 x 5 sources = 25 max
+const MAX_PER_SOURCE = 5;   // up to 5 per source
 
 // ── SENTIMENT KEYWORDS ────────────────────────────────────────────────────────
 
