@@ -30,10 +30,12 @@ const { spawnSync } = require("child_process");
 // Edit these to tune the screener to your risk tolerance.
 
 const RISK_GUARDS = {
-    MIN_PRICE:        5,       // Penny stock floor — below this = too risky/illiquid
-    MAX_WEEKLY_LOSS: -0.15,    // -15% in one week = hard distribution signal, wait it out
-    MIN_MARKET_CAP_B: 0.30,   // $300M minimum — ensures institutional participation
-    MIN_AVG_VOLUME:   300_000, // 300K shares/day — needed to exit cleanly
+    MIN_PRICE:             5,     // Penny stock floor
+    MAX_WEEKLY_LOSS:      -0.15,  // -15% weekly = distribution, wait it out
+    MIN_MARKET_CAP_B:      0.30,  // $300M minimum — institutional participation
+    MIN_AVG_VOLUME:        300_000,
+    MIN_MONTHLY_GAIN:      0.25,  // small/mid-cap: must be up ≥25% last month
+    MIN_MONTHLY_GAIN_LC:   0.15,  // large-cap: lower bar — up ≥15% last month
 };
 
 const GROWTH_WEIGHTS = {
@@ -114,10 +116,13 @@ function applyRiskGuards(analysis) {
         return `volume ratio ${volRatio.toFixed(2)}x — effectively illiquid`;
     }
 
-    // Monthly momentum gate — must have at least one month with +25% gain.
-    // Filters to high-momentum names only; removes slow-movers from the pool.
-    if ((perf.r1m ?? 0) < 0.25) {
-        return `1M return ${fmtPct(perf.r1m)} < +25% monthly momentum required`;
+    // Monthly momentum gate — different threshold for large caps vs small/mid
+    const minMonthly = analysis.isLargeCap
+        ? RISK_GUARDS.MIN_MONTHLY_GAIN_LC   // large cap: ≥ +15%
+        : RISK_GUARDS.MIN_MONTHLY_GAIN;     // small/mid:  ≥ +25%
+    if ((perf.r1m ?? 0) < minMonthly) {
+        const tag = analysis.isLargeCap ? "large-cap" : "momentum";
+        return `1M return ${fmtPct(perf.r1m)} < ${fmtPct(minMonthly)} ${tag} gate`;
     }
 
     return null; // ✅ passes all guards
@@ -487,11 +492,13 @@ async function run(opts = {}) {
     //    by running a tiny node eval that requires the file.
     let AI_STOCKS;
     try {
-        // Extract AI_STOCKS array from ai_screener.js without running its main logic
+        // Extract AI_STOCKS + LARGE_CAP_STOCKS from ai_screener.js
         const src = fs.readFileSync(path.join(__dirname, "ai_screener.js"), "utf8");
-        const match = src.match(/const AI_STOCKS\s*=\s*(\[[\s\S]*?\]);/);
-        if (!match) throw new Error("Could not locate AI_STOCKS array");
-        AI_STOCKS = eval(match[1]); // safe — it's a static array literal we wrote
+        const m1 = src.match(/const LARGE_CAP_STOCKS\s*=\s*(\[[\s\S]*?\]);/);
+        const m2 = src.match(/const AI_STOCKS\s*=\s*(\[[\s\S]*?\]);/);
+        if (!m2) throw new Error("Could not locate AI_STOCKS array");
+        const largeCaps = m1 ? eval(m1[1]) : [];
+        AI_STOCKS = [...eval(m2[1]), ...largeCaps];
     } catch (e) {
         console.error(`❌  Could not load AI_STOCKS from ai_screener.js: ${e.message}`);
         process.exit(1);
@@ -514,7 +521,9 @@ async function run(opts = {}) {
         console.log(`  📰  Hot stocks file age: ${age} min\n`);
     } catch (_) { /* hot_stocks.json not yet written — skip silently */ }
 
-    console.log(`  📋  Universe: ${AI_STOCKS.length} stocks (AI + news picks)\n`);
+    const lcCount  = AI_STOCKS.filter(s => s.isLargeCap).length;
+    const smidCount = AI_STOCKS.length - lcCount;
+    console.log(`  📋  Universe: ${AI_STOCKS.length} stocks — ${smidCount} small/mid (≥25% 1M gate) + ${lcCount} large-cap (≥15% 1M gate)\n`);
 
     // 2. Fetch all data
     const tickers = AI_STOCKS.map(s => s.ticker);

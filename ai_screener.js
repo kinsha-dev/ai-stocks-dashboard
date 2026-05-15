@@ -43,10 +43,50 @@ const BATCH_SIZE   = 5;
 const BATCH_DELAY  = 700;   // ms between batches (Yahoo Finance rate limit)
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STOCK UNIVERSE — 100 AI & Related Stocks  (small / mid cap only, ~<$50B)
-// Large-cap mega-techs (NVDA, AMD, MSFT, GOOGL, AMZN, META, AAPL, TSLA,
-// AVGO, ARM, QCOM, TSM, INTC, ASML, AMAT, LRCX, KLAC, DELL, ANET, PLTR,
-// CRM, NOW, ORCL, IBM, ADBE, CDNS, SNPS, ADSK, CRWD, PANW, MSTR) excluded.
+// ── LARGE-CAP WATCHLIST ───────────────────────────────────────────────────────
+// Included in the screener ONLY when monthly return ≥ +15% (momentum gate).
+// Marked isLargeCap: true so risk guards apply the lower threshold.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const LARGE_CAP_STOCKS = [
+    // AI Mega-cap
+    { ticker: "NVDA",  name: "NVIDIA",               sector: "AI Chips",        isLargeCap: true },
+    { ticker: "AMD",   name: "AMD",                  sector: "AI Chips",        isLargeCap: true },
+    { ticker: "AVGO",  name: "Broadcom",             sector: "AI Networking",   isLargeCap: true },
+    { ticker: "MSFT",  name: "Microsoft",            sector: "AI Software",     isLargeCap: true },
+    { ticker: "GOOGL", name: "Alphabet",             sector: "AI Cloud",        isLargeCap: true },
+    { ticker: "META",  name: "Meta Platforms",       sector: "AI Social",       isLargeCap: true },
+    { ticker: "AMZN",  name: "Amazon",               sector: "AI Cloud",        isLargeCap: true },
+    { ticker: "AAPL",  name: "Apple",                sector: "AI Consumer",     isLargeCap: true },
+    { ticker: "TSLA",  name: "Tesla",                sector: "AI Autonomous",   isLargeCap: true },
+    { ticker: "ARM",   name: "Arm Holdings",         sector: "AI Chip IP",      isLargeCap: true },
+    { ticker: "PLTR",  name: "Palantir",             sector: "AI Analytics",    isLargeCap: true },
+    { ticker: "CRM",   name: "Salesforce",           sector: "AI CRM",          isLargeCap: true },
+    { ticker: "NOW",   name: "ServiceNow",           sector: "AI Enterprise",   isLargeCap: true },
+    { ticker: "ANET",  name: "Arista Networks",      sector: "AI Networking",   isLargeCap: true },
+    // Semiconductors
+    { ticker: "QCOM",  name: "Qualcomm",             sector: "AI Mobile Chips", isLargeCap: true },
+    { ticker: "TSM",   name: "TSMC",                 sector: "AI Foundry",      isLargeCap: true },
+    { ticker: "INTC",  name: "Intel",                sector: "AI Chips",        isLargeCap: true },
+    { ticker: "ASML",  name: "ASML",                 sector: "Semi Equipment",  isLargeCap: true },
+    { ticker: "AMAT",  name: "Applied Materials",    sector: "Semi Equipment",  isLargeCap: true },
+    { ticker: "LRCX",  name: "Lam Research",         sector: "Semi Equipment",  isLargeCap: true },
+    { ticker: "KLAC",  name: "KLA Corp",             sector: "Semi Equipment",  isLargeCap: true },
+    // AI Software / Cloud
+    { ticker: "ORCL",  name: "Oracle",               sector: "AI Cloud",        isLargeCap: true },
+    { ticker: "IBM",   name: "IBM",                  sector: "AI Enterprise",   isLargeCap: true },
+    { ticker: "ADBE",  name: "Adobe",                sector: "AI Creative",     isLargeCap: true },
+    { ticker: "CDNS",  name: "Cadence Design",       sector: "AI EDA",          isLargeCap: true },
+    { ticker: "SNPS",  name: "Synopsys",             sector: "AI EDA",          isLargeCap: true },
+    { ticker: "CRWD",  name: "CrowdStrike",          sector: "AI Security",     isLargeCap: true },
+    { ticker: "PANW",  name: "Palo Alto Networks",   sector: "AI Security",     isLargeCap: true },
+    { ticker: "DELL",  name: "Dell Technologies",    sector: "AI Infrastructure",isLargeCap: true },
+    { ticker: "MSTR",  name: "MicroStrategy",        sector: "AI/Bitcoin",      isLargeCap: true },
+];
+
+// ── SMALL / MID-CAP UNIVERSE ──────────────────────────────────────────────────
+// Monthly momentum gate: r1m ≥ +25% (see enhanced_screener RISK_GUARDS).
+// Large caps above use a separate 15% gate.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const AI_STOCKS = [
