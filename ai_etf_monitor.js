@@ -34,9 +34,10 @@ const TICKER_WATCHLIST = new Set([
     "PLTR","CRM","NOW","ORCL","IBM","ADBE","CDNS","SNPS","CRWD","PANW",
     // HBM / Memory
     "MU","WDC","RMBS","AMKR","ENTG","CAMT","ICHR","AZTA",
-    // AI Infra / Cloud
+    // AI Infra / Cloud / GPU Compute
     "SMCI","APLD","VRT","CRDO","IREN","CORZ","WULF","NBIS","RXT","DBRG",
     "VNET","GDS","UNIT","PSTG","NTNX","HPE","ALAB","MPWR","WOLF","AEHR",
+    "HUT","BTBT","BTDR","HIVE","RIOT","MARA","CLSK","BITF","CIFR","GRIID",
     // Semiconductors
     "LSCC","AMBA","CEVA","ACLS","ONTO","NVTS","ALGM","SITM","MXL","TSEM",
     "COHU","FORM","MKSI","ACMR","KLIC","IPGP","HIMX","SWKS",

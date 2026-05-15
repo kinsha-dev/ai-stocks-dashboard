@@ -55,9 +55,21 @@ const AI_STOCKS = [
     { ticker: "APLD",  name: "Applied Digital",        sector: "AI Infrastructure" },
     { ticker: "VRT",   name: "Vertiv Holdings",        sector: "AI Infrastructure" },
     { ticker: "CRDO",  name: "Credo Technology",       sector: "AI Networking" },
+
+    // ── AI Compute / GPU Cloud / Ex-Crypto Miners pivoting to AI ─────────────
     { ticker: "IREN",  name: "Iris Energy",            sector: "AI Compute" },
     { ticker: "CORZ",  name: "Core Scientific",        sector: "AI Compute" },
     { ticker: "WULF",  name: "TeraWulf",               sector: "AI Compute" },
+    { ticker: "HUT",   name: "Hut 8 Corp",             sector: "AI Compute" },
+    { ticker: "BTBT",  name: "Bit Digital",            sector: "AI GPU Cloud" },
+    { ticker: "BTDR",  name: "Bitdeer Technologies",   sector: "AI Compute/ASIC" },
+    { ticker: "HIVE",  name: "HIVE Digital Tech",      sector: "AI GPU Cloud" },
+    { ticker: "RIOT",  name: "Riot Platforms",         sector: "AI Compute" },
+    { ticker: "MARA",  name: "Marathon Digital",       sector: "AI Compute" },
+    { ticker: "CLSK",  name: "CleanSpark",             sector: "AI Compute" },
+    { ticker: "BITF",  name: "Bitfarms",               sector: "AI Compute" },
+    { ticker: "CIFR",  name: "Cipher Mining",          sector: "AI Compute" },
+    { ticker: "GRIID", name: "Griid Infrastructure",   sector: "AI Compute" },
 
     // ── AI Semiconductors — Small / Mid Cap ──────────────────────────────────
     { ticker: "LSCC",  name: "Lattice Semiconductor",  sector: "AI Chips" },
