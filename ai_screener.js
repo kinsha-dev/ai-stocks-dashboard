@@ -201,6 +201,23 @@ const AI_STOCKS = [
     { ticker: "NBIS",  name: "Nebius Group",           sector: "AI Cloud Infra" },
     { ticker: "BE",    name: "Bloom Energy",           sector: "AI Energy" },
     { ticker: "TSEM",  name: "Tower Semiconductor",    sector: "AI Chips" },
+
+    // ── GPU / AI Accelerator Power ────────────────────────────────────────────
+    { ticker: "ALAB",  name: "Astera Labs",            sector: "GPU Connectivity" },
+    { ticker: "MPWR",  name: "Monolithic Power Sys",   sector: "GPU Power" },
+    { ticker: "WOLF",  name: "Wolfspeed",              sector: "SiC Power Semi" },
+    { ticker: "AEHR",  name: "Aehr Test Systems",      sector: "AI Chip Test" },
+
+    // ── Data Center Lease / Infrastructure ───────────────────────────────────
+    { ticker: "DBRG",  name: "DigitalBridge Group",    sector: "Data Center Lease" },
+    { ticker: "VNET",  name: "21Vianet Group",         sector: "Data Center Lease" },
+    { ticker: "GDS",   name: "GDS Holdings",           sector: "Data Center Lease" },
+    { ticker: "UNIT",  name: "Uniti Group",            sector: "Fiber/DC Infra" },
+
+    // ── Fiber Optics / Optical Interconnect ──────────────────────────────────
+    { ticker: "LITE",  name: "Lumentum Holdings",      sector: "AI Fiber Optics" },
+    { ticker: "AAOI",  name: "Applied Optoelectronics",sector: "AI Fiber Optics" },
+    { ticker: "CLFD",  name: "Clearfield Inc",         sector: "Fiber Connectivity" },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
