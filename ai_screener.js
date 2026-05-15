@@ -202,6 +202,16 @@ const AI_STOCKS = [
     { ticker: "BE",    name: "Bloom Energy",           sector: "AI Energy" },
     { ticker: "TSEM",  name: "Tower Semiconductor",    sector: "AI Chips" },
 
+    // ── HBM (High Bandwidth Memory) Ecosystem ────────────────────────────────
+    { ticker: "MU",    name: "Micron Technology",      sector: "HBM Memory" },
+    { ticker: "RMBS",  name: "Rambus",                 sector: "HBM Controller IP" },
+    { ticker: "AMKR",  name: "Amkor Technology",       sector: "HBM Packaging" },
+    { ticker: "ENTG",  name: "Entegris",               sector: "HBM Materials" },
+    { ticker: "CAMT",  name: "Camtek",                 sector: "HBM Inspection" },
+    { ticker: "ICHR",  name: "Ichor Holdings",         sector: "Semi Equipment Parts" },
+    { ticker: "AZTA",  name: "Azenta",                 sector: "Wafer Handling" },
+    { ticker: "WDC",   name: "Western Digital",        sector: "AI Storage/Memory" },
+
     // ── GPU / AI Accelerator Power ────────────────────────────────────────────
     { ticker: "ALAB",  name: "Astera Labs",            sector: "GPU Connectivity" },
     { ticker: "MPWR",  name: "Monolithic Power Sys",   sector: "GPU Power" },
